@@ -85,10 +85,11 @@
           <div class="settings-title">
             <h2>Internal MQTT Settings</h2>
             <label class="checkbox-field">
-              <span>Enabled</span>
-              <input id="enabled" type="checkbox">
+              <span>내부 MQTT 사용</span>
+              <input id="enabled" type="checkbox" form="configForm">
             </label>
           </div>
+          <p>선택적인 내부 MQTT 브로커입니다. Host를 입력하고 내부 MQTT 사용을 선택한 뒤 Save를 누르세요. 원본 upstream(dapt.iptime.org) bypass와는 별개입니다.</p>
           <form id="configForm" class="internal-form">
             <label>
               <span>Host</span>
@@ -134,7 +135,7 @@
             <dt>Last Error</dt><dd id="originError">-</dd>
           </dl>
           <button id="prepareFirmware" type="button">Prepare / Retry DIV01 Firmware</button>
-          <p>원본 조회: 1.1.1.1 → 1.0.0.1 → 8.8.8.8 → 8.8.4.4. 내부 MQTT는 시작 시 자동 연결하고 끊기면 재연결합니다.</p>
+          <p>원본 조회: 1.1.1.1 → 1.0.0.1 → 8.8.8.8 → 8.8.4.4. 내부 MQTT는 사용으로 저장한 경우에만 연결합니다.</p>
         </section>
       </section>
 
@@ -156,6 +157,14 @@
         <p>호스트 변경은 HTTP URL 2곳과 독립 호스트명 1곳에 적용됩니다. 해당 DNS/IP가 Bridge를 가리키도록 설정하세요. CA 검증은 장치의 TLS 검증 우회를 해제하지 않습니다.</p>
         <p id="buildMessage" role="status"></p>
         <div id="buildDownloads"></div>
+      </section>
+
+      <section class="payloads">
+        <h2>포트별 동작 설정</h2>
+        <p id="fixedPorts"></p>
+        <p>Bypass는 원본 dapt.iptime.org의 동일 포트로 TLS를 포함한 바이트를 그대로 전달합니다. Proxy는 지정한 서버로 전달합니다. Custom server는 입력한 고정 응답을 반환합니다. 모든 모드에서 접속·종료·전송량·오류를 기록합니다.</p>
+        <p>TLS 종료에는 Bridge 서버 인증서가 사용됩니다. 저장한 모드는 새 연결부터 적용되며 재시작 후에도 유지됩니다.</p>
+        <div id="portSettings"></div>
       </section>
 
       <section class="payloads">

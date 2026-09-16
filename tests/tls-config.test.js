@@ -83,7 +83,7 @@ test('custom Root CA validates certificate and serves firmware over trusted HTTP
   assert.equal(JSON.parse(status.body).state.bridge.tls.mode, 'terminate');
   assert.equal((await get(ports.DASHBOARD_HTTPS_PORT, '/tls/root-ca.crt')).body, config.rootCa);
   assert.equal(JSON.parse((await get(extraPort, '/health')).body).port, Number(extraPort));
-  assert.equal(JSON.parse((await get(ports.ORIGIN_HTTP_PORT, '/health', false)).body).port, Number(ports.ORIGIN_HTTP_PORT));
+  assert.equal((await get(ports.ORIGIN_HTTP_PORT, '/firmware/ver.220706.1633_DIV01.bin', false)).status, 503);
   const currentStatus = JSON.parse((await get(ports.DASHBOARD_HTTPS_PORT, '/api/status')).body);
   assert.equal(currentStatus.state.bridge.access.ports[extraPort].accepted, 1);
   assert.equal(currentStatus.state.bridge.origin.tcpServices.find((service) => service.port === Number(extraPort)).mode, 'simulate-tls');

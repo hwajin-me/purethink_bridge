@@ -18,7 +18,7 @@ async function until(fn) { for (let i = 0; i < 160; i++) { const result = await 
 const publish = (client, topic, body) => new Promise((resolve, reject) => client.publish(topic, body, { qos: 1 }, (error) => error ? reject(error) : resolve()));
 const subscribe = (client, topic) => new Promise((resolve, reject) => client.subscribe(topic, (error) => error ? reject(error) : resolve()));
 
-test('real bridge: auto local MQTT, three-way traffic, multi-device reconnect, config migration', { timeout: 25000 }, async (t) => {
+test('real bridge: opt-in upstream MQTT, three-way traffic, multi-device reconnect, config migration', { timeout: 25000 }, async (t) => {
   const data = await fs.mkdtemp(path.join(os.tmpdir(), 'purethink-test-'));
   const local = new Aedes(); const manufacturer = new Aedes();
   const localServer = net.createServer(local.handle);
@@ -55,7 +55,7 @@ test('real bridge: auto local MQTT, three-way traffic, multi-device reconnect, c
   `);
   const spawnBridge = () => spawn(process.execPath, ['--import', preload, 'src/index.js'], { env: { ...process.env,
     DATA_DIR: data, HTTP_PORT: String(httpPort), DEVICE_MQTT_PORT: String(devicePort),
-    ORIGIN_HTTP_PORT: String(proxyPort), INTERNAL_MQTT_HOST: '127.0.0.1', ORIGIN_TCP_PORTS: '', LOCAL_OTA_ENABLED: 'false', FIRMWARE_AUTO_PREPARE: 'false', CUSTOM_BRIDGE_ENABLED: 'false', PORT_SERVICES_FILE: '/nonexistent/must-not-load.json' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    ORIGIN_HTTP_PORT: String(proxyPort), INTERNAL_MQTT_HOST: '127.0.0.1', INTERNAL_MQTT_ENABLED: 'true', ORIGIN_TCP_PORTS: '', LOCAL_OTA_ENABLED: 'false', FIRMWARE_AUTO_PREPARE: 'false', CUSTOM_BRIDGE_ENABLED: 'false', CUSTOM_TCP_ROUTES: 'ignored legacy routes', PORT_SERVICES_FILE: '/nonexistent/must-not-load.json' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let child = spawnBridge();
   let output = '';
   const watch = (process) => { process.stdout.on('data', (chunk) => { output += chunk; }); process.stderr.on('data', (chunk) => { output += chunk; }); };
@@ -68,10 +68,17 @@ test('real bridge: auto local MQTT, three-way traffic, multi-device reconnect, c
     localServer.close(); manufacturerServer.close(); await fs.rm(data, { recursive: true, force: true });
   });
   async function status() { try { return await (await fetch(`http://127.0.0.1:${httpPort}/api/status`)).json(); } catch { if (child.exitCode !== null) throw Error(output); return null; } }
-  await until(async () => { const s = await status(); return s?.state.internal.status === 'connected' && s?.state.manufacturer.status === 'connected'; });
+  await until(async () => { const s = await status(); return s?.state.internal.status === 'disabled' && s?.state.manufacturer.status === 'connected'; });
   const saved = JSON.parse(await fs.readFile(path.join(data, 'config.json')));
-  assert.equal(saved.internalMqtt.enabled, true); assert.equal(saved.routerDnat, undefined);
+  assert.equal(saved.internalMqtt.enabled, false);
+  assert.equal(saved.internalMqtt.host, ''); assert.equal(saved.routerDnat, undefined);
   assert.deepEqual(saved.devices, [{ id: 'legacy-device', name: 'Legacy' }]);
+  const enabled = await fetch(`http://127.0.0.1:${httpPort}/api/config`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ internalMqtt: { enabled: true, host: '127.0.0.1' } })
+  });
+  assert.equal(enabled.status, 200);
+  await until(async () => (await status()).state.internal.status === 'connected');
   async function client(options) { const c = mqtt.connect({ reconnectPeriod: 0, ...options }); clients.push(c); await once(c, 'connect'); return c; }
   const observer = await client({ host: '127.0.0.1', port: localServer.address().port });
   const cloud = await client({ host: '127.0.0.1', port: manufacturerServer.address().port, protocol: 'mqtts', rejectUnauthorized: false });
@@ -202,6 +209,11 @@ test('real bridge: auto local MQTT, three-way traffic, multi-device reconnect, c
   assert.equal((await status()).state.internal.status, 'connected');
   const response = await fetch(`http://127.0.0.1:${httpPort}/api/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ internalMqtt: { enabled: false, host: '', password: 'keep-secret' } }) });
   assert.equal(response.status, 200);
+  assert.equal((await status()).state.internal.status, 'disabled');
+  assert.equal((await status()).state.internal.lastError, null);
+  await until(() => !local.clients['purethink-bridge']);
+  await fetch(`http://127.0.0.1:${httpPort}/api/reconnect/internal`, { method: 'POST' });
+  assert.equal((await status()).state.internal.status, 'disabled');
   assert.equal((await status()).config.internalMqtt.password, '********');
   assert.equal((await fetch(`http://127.0.0.1:${httpPort}/api/router-dnat/status`, { method: 'POST' })).status, 404);
   child.kill(); await once(child, 'exit');

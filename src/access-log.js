@@ -16,11 +16,11 @@ export function createAccessLog({ directory, maxBytes = 5 * 1024 * 1024, limit =
     } catch (error) { state.lastError = error.message; }
   }
   function observe(server, { port, mode }) {
-    state.ports[port] = { accepted: 0, active: 0, lastAccess: null, mode };
+    state.ports[port] = { accepted: 0, active: 0, lastAccess: null, mode: typeof mode === 'function' ? mode() : mode };
     server.on('connection', (socket) => {
       const stats = state.ports[port];
       stats.accepted++; stats.active++; stats.lastAccess = new Date().toISOString();
-      const peer = { port, mode, remoteAddress: socket.remoteAddress, remotePort: socket.remotePort };
+      const peer = { port, mode: typeof mode === 'function' ? mode() : mode, remoteAddress: socket.remoteAddress, remotePort: socket.remotePort };
       record({ ...peer, event: 'connect' });
       socket.once('close', (hadError) => {
         stats.active--;

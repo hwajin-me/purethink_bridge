@@ -337,3 +337,10 @@ input[type="checkbox"] {
 .firmware-builder { margin: 20px 0; }
 #buildMessage, #buildCaMessage { overflow-wrap: anywhere; }
 #buildDownloads { display: flex; flex-wrap: wrap; gap: 16px; }
+
+#portSettings { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.port-route { padding: 16px; border: 1px solid #ccd4df; border-radius: 8px; min-width: 0; }
+.port-route label { display: grid; gap: 4px; margin: 10px 0; }
+.port-route input, .port-route select, .port-route textarea { width: 100%; box-sizing: border-box; padding: 8px; }
+.port-route small { font-size: 12px; font-weight: normal; }
+.port-route [hidden] { display: none; }

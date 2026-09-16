@@ -289,7 +289,7 @@ bash /root/purethink-bridge-install.sh
 
 기본 설치 소스는 사용자 포크 `https://github.com/hwajin-me/purethink_bridge.git`의 `main`입니다. 포크나 특정 브랜치/태그를 설치하려면 `REPO_URL`, `REPO_REF`를 함께 지정할 수 있습니다.
 
-새 설치의 기본 내부 MQTT는 실행 환경의 로컬 브로커 `127.0.0.1:1883`이며 연결이 활성화됩니다. 다른 서버의 브로커를 사용하면 대시보드에서 Host를 지정하세요. 인증이 필요하면 `http://<LXC IP>:33301`에서 ID/PW를 입력하세요. 재설치 시 기존 MQTT 설정·인증정보는 보존하며, MQTT 브로커 자체를 LXC에 설치하지는 않습니다. DIV01 펌웨어 패치와 OTA 서버는 자동으로 준비됩니다. UniFi DNS 전환, 기기의 실제 펌웨어 업데이트, Home Assistant 설정은 이 문서의 해당 절차를 따릅니다. 이후 예제의 Ubuntu 서버 IP에는 LXC IP를 사용합니다.
+새 설치의 내부 MQTT은 기본적으로 미사용입니다. 사용하려면 대시보드에서 Host를 지정하고 `내부 MQTT 사용`을 선택한 뒤 Save를 누르세요. 인증이 필요하면 `http://<LXC IP>:33301`에서 ID/PW를 입력하세요. 재설치 시 기존 MQTT 설정·인증정보는 보존하며, MQTT 브로커 자체를 LXC에 설치하지는 않습니다. DIV01 펌웨어 패치와 OTA 서버는 자동으로 준비됩니다. UniFi DNS 전환, 기기의 실제 펌웨어 업데이트, Home Assistant 설정은 이 문서의 해당 절차를 따릅니다. 이후 예제의 Ubuntu 서버 IP에는 LXC IP를 사용합니다.
 
 #### 자동 설치되는 DIV01 OTA
 
@@ -578,7 +578,7 @@ UDP나 목록에 없는 포트는 전달하지 않습니다.
 
 ## 10. 기존 설정 이전과 자동 MQTT 연결
 
-새 설치와 Docker/직접 실행 모두 `127.0.0.1:1883` 자동 연결이 기본입니다. Docker/직접 실행에서 다른 기본 서버를 쓰려면 첫 실행 전에 `INTERNAL_MQTT_HOST`를 설정하세요. LXC 설치 후에는 대시보드에서 서버를 변경하세요. `INTERNAL_MQTT_ENABLED=false`로 첫 실행 자동 연결을 끌 수 있습니다. 이미 저장한 host/port/ID/PW 및 비활성화 선택은 보존합니다. 잘못된 포트·토픽·타입은 저장 전에 거부하고, 설정은 권한 0600의 임시 파일을 원자적으로 교체해 보관합니다. 빈 비밀번호 입력은 기존 값을 유지하며 `Clear saved password`로 명시적으로 삭제할 수 있습니다. 예전 버전의 host가 비어 있는 초기 설정만 자동 연결 기본값으로 이전합니다. 별도 MQTT 브로커를 자동 설치하지는 않습니다. `127.0.0.1`은 Bridge가 실행되는 호스트 또는 컨테이너 자신을 가리킵니다. Docker bridge 네트워크에서 별도 브로커를 사용하면 해당 브로커의 서비스명이나 접근 가능한 IP를 지정하세요.
+새 설치와 Docker/직접 실행 모두 내부 MQTT 미사용이 기본입니다. 대시보드에서 Host를 입력하고 `내부 MQTT 사용`을 선택한 뒤 Save를 누르면 연결됩니다. 해제 후 저장하면 연결과 재시도가 중단됩니다. Docker/직접 실행에서 첫 실행부터 연결하려면 `INTERNAL_MQTT_ENABLED=true`와 `INTERNAL_MQTT_HOST`를 함께 설정하세요. 이미 저장한 host/port/ID/PW 및 비활성화 선택은 보존합니다. 잘못된 포트·토픽·타입은 저장 전에 거부하고, 설정은 권한 0600의 임시 파일을 원자적으로 교체해 보관합니다. 빈 비밀번호 입력은 기존 값을 유지하며 `Clear saved password`로 명시적으로 삭제할 수 있습니다. 구버전 설정도 저장된 사용 여부를 그대로 유지합니다. 별도 MQTT 브로커를 자동 설치하지는 않습니다. `127.0.0.1`은 Bridge가 실행되는 호스트 또는 컨테이너 자신을 가리킵니다. Docker bridge 네트워크에서 별도 브로커를 사용하면 해당 브로커의 서비스명이나 접근 가능한 IP를 지정하세요.
 
 ASUS 공유기 SSH/DNAT UI·API·의존성은 제거되었습니다. 남아 있는 `routerDnat` 설정과 공유기 비밀번호는 앱 시작 시 설정 파일에서 제거합니다. 장비의 기존 네트워크 규칙은 앱이 변경하지 않습니다. 이전 서버에서 6002를 OTA가 점유하고 있다면 **소스 업데이트 후 설치 스크립트를 다시 실행**하여 16003으로 이전한 뒤 DNS를 전환하세요.
 
@@ -741,7 +741,27 @@ HTTPS 펌웨어 다운로드 예: `https://dapt.iptime.org/firmware/ver.220706.1
 
 대체 모드를 끄려면 `CUSTOM_BRIDGE_ENABLED=false`로 변경하고 서비스를 재시작합니다. 로컬 패치 버전 광고까지 끄려면 `LOCAL_OTA_ENABLED=false`도 설정합니다. 기본값은 둘 다 `false`입니다.
 
+### 웹에서 포트별 모드 선택
+
+대시보드의 **포트별 동작 설정**에서 활성 TCP 포트마다 모드를 선택하고 **저장 및 적용**을 누릅니다. 6002(Bridge HTTP/펌웨어), 8885(Bridge MQTT)는 고정입니다.
+
+| 모드 | 동작 | 웹 입력 |
+| --- | --- | --- |
+| Bypass | 공용 DNS로 조회한 dapt.iptime.org의 동일 포트로 원본 바이트 전달. TLS도 그대로 통과 | 없음 |
+| Proxy | 지정한 upstream으로 전달. 클라이언트 TLS 종료와 upstream TLS 연결을 별도로 선택 | 클라이언트 TCP/TLS, upstream hostname(dapt.iptime.org) 또는 IPv4·포트·TCP/TLS |
+| Custom server | 로컬에서 고정 응답 반환 | TCP/TLS, HTTP 200 또는 TCP 텍스트 응답 후 종료, UTF-8 응답 본문(최대 16 KiB) |
+
+저장된 모드는 `config.json`의 `portRouting`에 보관되며 재시작 없이 **새 연결부터** 적용됩니다. 기존 연결은 종료될 때까지 원래 모드로 유지됩니다. 웹에서 저장한 모드는 기존 환경 변수/서비스 파일 설정보다 우선합니다. 웹 선택에는 `CUSTOM_BRIDGE_ENABLED=true`가 필요하지 않습니다. Custom server의 고정 응답은 제조사 프로토콜 전체를 구현하지 않습니다. 프로토콜별 서버 모듈은 아래 파일 설정을 이용합니다.
+
+모든 모드의 접속/종료, 모드, 원격 주소, RX/TX 바이트, 연결 오류는 **Port Access**와 `DATA_DIR/logs/access.jsonl`에서 확인합니다. TLS bypass의 암호화된 본문은 해독하지 않습니다. Proxy의 upstream TLS 인증서는 검증하며, 6002/8885/관리 포트 변경 및 로컬 리스너로 향하는 전달 루프는 저장 전에 거부합니다.
+
+API: `GET /api/ports`로 고정 포트와 현재 모드를 조회하고 `POST /api/ports`에 `{"portRouting":{"8883":{"mode":"bypass"}}}` 형식으로 변경할 포트만 전달합니다. 저장 실패 시 현재 라우팅을 유지합니다.
+
 ### 추가 서비스 포트 및 접근 기록
+
+기본 라우팅은 **6002: Bridge HTTP/펌웨어 처리**, **8885: Bridge MQTT/TLS 처리**, **나머지 활성 TCP 포트: 접속 로깅 후 원본 `dapt.iptime.org`의 동일 포트로 바이트 그대로 bypass**입니다. 원본 IP는 LAN DNS 대신 공용 DNS에서 조회합니다. 내부 MQTT의 사용 여부·Host는 이 라우팅에 영향을 주지 않습니다. 6002·8885는 `PORT_SERVICES_FILE`에 항목이 남아 있어도 Bridge가 직접 처리합니다. 6002에서 로컬 펌웨어가 처리하지 않는 HTTP 요청은 원본으로 전달합니다. 관리 포트 33301(선택적 HTTPS 33302)은 대시보드 전용입니다.
+
+기본 모드(`CUSTOM_BRIDGE_ENABLED=false`)에서는 `CUSTOM_TCP_ROUTES`와 `PORT_SERVICES_FILE`을 읽지 않습니다. 다른 포트의 TLS 종료·시뮬레이션은 custom 모드를 명시적으로 활성화한 경우에만 적용됩니다.
 
 기본 TCP 전달 포트는 `80,443,17,18,1723,2522,6001,6003,8090,8883,8886,11222,11221,11622,11821,11822,12220,12933,14621,14821,20622,24833`입니다. 기존 설치에서 `ORIGIN_TCP_PORTS=80,443`을 저장했다면 그 줄을 삭제하거나 위 목록으로 바꾸고 재시작해야 추가 포트가 활성화됩니다. Docker에서는 필요한 포트를 별도로 게시하고 UniFi 방화벽에서도 허용해야 합니다.
 

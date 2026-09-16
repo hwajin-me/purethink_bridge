@@ -8,7 +8,7 @@ import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { ORIGIN_HOST } from './origin.js';
 
-export async function loadPortServices(filename, allowedPorts, otherPorts = []) {
+export async function loadPortServices(filename, allowedPorts, otherPorts = [], bridgePorts = []) {
   if (!filename) return {};
   const settings = JSON.parse(fs.readFileSync(filename, 'utf8'));
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('PORT_SERVICES_FILE must contain a port-keyed object');
@@ -16,6 +16,8 @@ export async function loadPortServices(filename, allowedPorts, otherPorts = []) 
   const result = {};
   for (const [key, value] of Object.entries(settings)) {
     const port = Number(key);
+    // Core HTTP/MQTT listeners cannot be replaced by legacy service overrides.
+    if (bridgePorts.includes(port)) continue;
     if (String(port) !== key || !allowedPorts.includes(port)) throw new Error(`Port service ${key} is not an enabled service port`);
     if (!value || !['proxy', 'simulate'].includes(value.mode) || !['tcp', 'tls'].includes(value.transport)) throw new Error(`Invalid mode/transport for port ${port}`);
     const config = { ...value, port };

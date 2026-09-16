@@ -105,7 +105,7 @@ async function loadStatus() {
 
   setStatus('localControl', state.device.localConnected && state.internal.status === 'connected' ? 'available' : 'limited');
   const access = state.bridge.access;
-  setText('portAccess', access ? Object.entries(access.ports).map(([port, stats]) => `${port}: ${stats.accepted} connections / ${stats.active} active / ${stats.mode}`).join('\n') + '\n\n' + access.recent.slice(-40).reverse().map((event) => `${event.time} :${event.port} ${event.event} ${event.remoteAddress || ''} ${event.error || ''}`).join('\n') : '-');
+  setText('portAccess', access ? Object.entries(access.ports).map(([port, stats]) => `${port}: ${stats.accepted} connections / ${stats.active} active / ${stats.mode}`).join('\n') + '\n\n' + access.recent.slice(-40).reverse().map((event) => `${event.time} :${event.port ?? event.ports?.join(',') ?? '-'} ${event.event} ${event.mode || ''} ${event.remoteAddress || ''} ${event.event === 'close' ? `RX ${event.bytesRead} / TX ${event.bytesWritten} bytes` : ''} ${event.error || ''}`).join('\n') : '-');
   setText('bridgeHost', state.bridge.host);
   setTime('startedAt', state.startedAt);
   setText('bridgeCounts', counts(state.bridge));
@@ -115,7 +115,7 @@ async function loadStatus() {
   setText('originAddresses', origin.addresses.join(', '));
   setText('originDns', origin.server);
   const https = origin.tcpServices?.find((service) => service.port === 443);
-  setText('originHttps', state.bridge.tls?.mode === 'terminate' ? `TLS termination :${state.bridge.tls.httpsPort} · custom certificate` : https ? `${https.status} · ${https.connections} connections${https.lastError ? ` · ${https.lastError}` : ''}` : 'Disabled — enable ORIGIN_TCP_PORTS=80,443');
+  setText('originHttps', https ? `${https.mode} · ${https.status} · ${https.connections} connections${https.lastError ? ` · ${https.lastError}` : ''}` : 'Disabled — enable ORIGIN_TCP_PORTS=80,443');
   setText('originError', origin.lastError);
   setText('originPorts', [origin.mqttPort, origin.httpPort, ...(origin.tcpPorts || [])].join(', '));
   setText('originOta', origin.localOta ? 'DIV01 patch enabled' : 'Manufacturer passthrough');
@@ -309,3 +309,66 @@ $('firmwareBuildForm').addEventListener('submit', async (event) => {
   } catch (error) { setText('buildMessage', error.message); }
   finally { $('buildFirmware').disabled = false; }
 });
+
+async function loadPortSettings() {
+  const response = await fetch('/api/ports');
+  if (!response.ok) throw Error('포트 설정을 불러오지 못했습니다.');
+  const data = await response.json();
+  $('fixedPorts').textContent = data.fixed.map((entry) => `${entry.port}: ${entry.mode} (고정)`).join(' · ');
+  $('portSettings').innerHTML = data.ports.map((entry) => {
+    const cfg = entry.config || {};
+    return `<form class="port-route" data-port="${entry.port}">
+      <h3>TCP ${entry.port} <small>현재: ${escapeText(entry.mode)}</small></h3>
+      <label>동작<select name="mode">
+        ${!entry.config ? '<option value="" selected>기존 서버 설정 유지</option>' : ''}
+        ${['bypass', 'proxy', 'custom'].map((mode) => `<option value="${mode}" ${cfg.mode === mode ? 'selected' : ''}>${{ bypass: 'Bypass · 원본 동일 포트', proxy: 'Proxy · 목적지 지정', custom: 'Custom server · 직접 응답' }[mode]}</option>`).join('')}
+      </select></label>
+      <div data-details="transport"><label>클라이언트 연결<select name="transport"><option value="tcp">TCP (평문)</option><option value="tls" ${cfg.transport === 'tls' ? 'selected' : ''}>TLS 종료</option></select></label></div>
+      <div data-details="proxy">
+        <label>Upstream Host<input name="targetHost" value="${escapeText(cfg.upstream?.host || 'dapt.iptime.org')}" placeholder="dapt.iptime.org 또는 IPv4"></label>
+        <label>Upstream Port<input name="targetPort" type="number" min="1" max="65535" value="${cfg.upstream?.port || entry.port}"></label>
+        <label>Upstream 연결<select name="targetTransport"><option value="tcp">TCP</option><option value="tls" ${cfg.upstream?.transport === 'tls' ? 'selected' : ''}>TLS (인증서 검증)</option></select></label>
+      </div>
+      <div data-details="custom">
+        <label>응답 프로토콜<select name="protocol"><option value="http">HTTP 200</option><option value="stream" ${cfg.protocol === 'stream' ? 'selected' : ''}>TCP 텍스트 응답 후 종료</option></select></label>
+        <label>응답 본문<textarea name="response" rows="3">${escapeText(cfg.response ?? 'Bridge OK\n')}</textarea></label>
+      </div>
+      <button type="submit">저장 및 적용</button><p role="status" data-result></p>
+    </form>`;
+  }).join('');
+  for (const form of $('portSettings').querySelectorAll('form')) updatePortFields(form);
+}
+function updatePortFields(form) {
+  const mode = form.elements.mode.value;
+  for (const details of form.querySelectorAll('[data-details]')) {
+    const show = details.dataset.details === mode || (details.dataset.details === 'transport' && ['proxy', 'custom'].includes(mode));
+    details.hidden = !show;
+    for (const input of details.querySelectorAll('input, select, textarea')) input.disabled = !show;
+  }
+  form.querySelector('button').disabled = !mode;
+}
+$('portSettings').addEventListener('change', (event) => {
+  if (event.target.name === 'mode') updatePortFields(event.target.form);
+});
+$('portSettings').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const fields = form.elements;
+  const result = form.querySelector('[data-result]');
+  const button = form.querySelector('button');
+  button.disabled = true;
+  try {
+    const value = { mode: fields.mode.value };
+    if (value.mode !== 'bypass') value.transport = fields.transport.value;
+    if (value.mode === 'proxy') value.upstream = { host: fields.targetHost.value.trim(), port: Number(fields.targetPort.value), transport: fields.targetTransport.value };
+    if (value.mode === 'custom') { value.protocol = fields.protocol.value; value.response = fields.response.value; }
+    const response = await fetch('/api/ports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ portRouting: { [form.dataset.port]: value } }) });
+    const data = await response.json();
+    if (!response.ok) throw Error(data.error || '저장 실패');
+    form.querySelector('small').textContent = `현재: ${value.mode}`;
+    result.textContent = '저장했습니다. 새 연결부터 적용됩니다. 기존 연결은 이전 모드로 유지됩니다.';
+    await loadStatus();
+  } catch (error) { result.textContent = error.message; }
+  finally { button.disabled = false; }
+});
+loadPortSettings().catch((error) => { $('fixedPorts').textContent = error.message; });

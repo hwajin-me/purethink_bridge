@@ -516,8 +516,8 @@ EOF
     cat > "$PB_WORK/config.json" <<'JSON'
 {
   "internalMqtt": {
-    "enabled": true,
-    "host": "127.0.0.1",
+    "enabled": false,
+    "host": "",
     "port": 1883,
     "username": "",
     "password": "",
@@ -576,7 +576,7 @@ JS
   else
     apt-get clean
   fi
-  printf '\nBridge: http://<LXC-IP>:33301\nOrigin proxy: http://<LXC-IP>:6002 (local DIV01 OTA: 127.0.0.1:16003)\nData: %s\nUpdate: bridge update (root)\nLocal MQTT auto-connects. Follow README UniFi DNS setup; enable local DIV01 OTA only when needed.\n' "$PB_DATA"
+  printf '\nBridge: http://<LXC-IP>:33301\nOrigin proxy: http://<LXC-IP>:6002 (local DIV01 OTA: 127.0.0.1:16003)\nData: %s\nUpdate: bridge update (root)\nEnable optional internal MQTT in the dashboard if needed. Follow README UniFi DNS setup; enable local DIV01 OTA only when needed.\n' "$PB_DATA"
 }
 
 # Also supports the Community Scripts bash -c invocation and curl | bash.

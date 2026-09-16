@@ -47,3 +47,37 @@ test('custom TCP destination bypasses origin DNS and records client port, traffi
   assert.ok(fs.existsSync(path.join(directory, 'access.jsonl.1')));
   assert.ok(!fs.readFileSync(path.join(directory, 'access.jsonl'), 'utf8').includes('payload'));
 });
+
+test('default bypass resolves origin, preserves bytes and destination port, and logs access', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-bypass-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const upstream = net.createServer((socket) => socket.pipe(socket));
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
+  t.after(() => upstream.close());
+  const port = upstream.address().port;
+  const log = createAccessLog({ directory });
+  let resolutions = 0;
+  const proxy = createTcpProxy({ port, lookup(host, options, callback) {
+    assert.equal(host, 'dapt.iptime.org');
+    resolutions++;
+    if (options.all) callback(null, [{ address: '127.0.0.1', family: 4 }]);
+    else callback(null, '127.0.0.1', 4);
+  } });
+  log.observe(proxy, { port, mode: 'passthrough' });
+  proxy.listen(0, '127.0.0.1'); await once(proxy, 'listening');
+  t.after(() => proxy.close());
+  const client = net.connect(proxy.address().port, '127.0.0.1');
+  const payload = Buffer.from([0, 255, 22, 3, 1, 0, 4, 128]);
+  const chunks = [];
+  client.on('data', (chunk) => chunks.push(chunk));
+  client.end(payload);
+  await once(client, 'close');
+  assert.deepEqual(Buffer.concat(chunks), payload);
+  assert.equal(resolutions, 1);
+  for (let i = 0; i < 50 && log.state.ports[port].active; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(log.state.ports[port].accepted, 1);
+  const closed = log.state.recent.find((entry) => entry.event === 'close');
+  assert.equal(closed.mode, 'passthrough');
+  assert.equal(closed.bytesRead, payload.length);
+  assert.equal(closed.bytesWritten, payload.length);
+});

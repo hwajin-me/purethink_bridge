@@ -80,9 +80,9 @@ python3 - <<'PY'
 import json
 from pathlib import Path
 config = json.loads(Path('/var/lib/purethink-bridge/config.json').read_text())
-assert config['internalMqtt']['host'] == '127.0.0.1'
+assert config['internalMqtt']['host'] == ''
 assert config['internalMqtt']['port'] == 1883
-assert config['internalMqtt']['enabled'] is True
+assert config['internalMqtt']['enabled'] is False
 PY
 if grep -q DEVICE_MQTT_DISPLAY_HOST /etc/purethink-bridge.env; then exit 1; fi
 curl -fsS -X POST -H 'Content-Type: application/json' -d '{"internalMqtt":{"enabled":false,"host":"custom.invalid","password":"test-secret","clientId":"persistent-test"}}' http://127.0.0.1:33301/api/config
