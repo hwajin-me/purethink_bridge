@@ -209,7 +209,7 @@ Bridge가 시작되면 DIV01 원본을 공용 DNS 경로로 내려받아 크기�
 
 준비된 **DIV01 원본 `1630`과 패치 `1633` 파일은 OTA 광고 설정과 관계없이 6002에서 직접 다운로드**할 수 있습니다. 인터넷이 끊겨도 제공되며 GET/HEAD와 단일 HTTP Range 요청을 지원합니다. 다른 모델·파일은 원본으로 전달합니다. 패치 파일이 없을 때에는 503을 반환하고 준비되지 않은 패치 버전은 광고하지 않습니다.
 
-`LOCAL_OTA_ENABLED=true`는 `/version/combined`, `/api/FirmwareVersionCombined`, `/api/GetFirmwareVersionCombined`에서 검증된 DIV01 패치 버전을 안내하도록 합니다. 기본값 false에서는 제조사 버전 응답을 그대로 전달합니다. **DIV01 업데이트 작업에만 활성화하고, 다른 모델이 함께 있는 환경에서는 활성화하지 마세요.** 다른 모델의 패치는 검증되지 않았습니다. LXC의 기존 Python OTA 서비스(127.0.0.1:16003)는 진단/호환용으로 유지되지만 Bridge의 파일 제공에는 필요하지 않습니다.
+Bridge의 **6002**는 `/version/combined`, `/api/FirmwareVersionCombined`, `/api/GetFirmwareVersionCombined`에서 항상 검증된 로컬 DIV01 패치 버전을 안내합니다. 기존 `LOCAL_OTA_ENABLED=false` 설정도 이 포트의 버전 조회를 원본으로 넘기지 않습니다. 파일이 준비되지 않았거나 검증에 실패하면 503을 반환하며 대시보드의 Prepare / Retry DIV01 Firmware로 준비할 수 있습니다. `LOCAL_OTA_ENABLED`는 별도로 활성화한 custom HTTP/HTTPS 리스너의 버전 안내에만 적용됩니다. 버전 안내와 패치는 DIV01용이며 다른 모델의 패치는 검증되지 않았습니다. LXC의 기존 Python OTA 서비스(127.0.0.1:16003)는 진단/호환용으로 유지되지만 Bridge의 파일 제공에는 필요하지 않습니다.
 
 대시보드에서 Firmware 상태와 준비된 파일을 확인하고 `Prepare / Retry DIV01 Firmware`로 재시도할 수 있습니다. 기기 플래시는 자동으로 수행하지 않습니다. 수동 준비와 다운로드 예시:
 
@@ -308,7 +308,7 @@ bash /root/purethink-bridge-install.sh
 DIV01_FIRMWARE_URL=file:///root/ver.220706.1630_DIV01.bin bash /root/purethink-bridge-install.sh
 ```
 
-설치 완료 후 수동 펌웨어 패치 단계는 생략할 수 있습니다. 위 DNS 설정과 `LOCAL_OTA_ENABLED` 절차에 따라 **DIV01만** 업데이트하세요. 진단용 OTA 백엔드는 다른 모델·파일에 404를 반환하고, Bridge는 검증된 DIV01 두 파일을 로컬에서 제공하며 나머지 요청은 원본으로 전달합니다. 기기에 자동 플래시하지 않습니다.
+설치 완료 후 수동 펌웨어 패치 단계는 생략할 수 있습니다. 위 DNS 설정을 적용한 뒤 **DIV01만** 업데이트하세요. 진단용 OTA 백엔드는 다른 모델·파일에 404를 반환하고, Bridge는 검증된 DIV01 두 파일을 로컬에서 제공하며 나머지 요청은 원본으로 전달합니다. 기기에 자동 플래시하지 않습니다.
 
 ```bash
 curl -fsS http://127.0.0.1:16003/version/combined
@@ -739,7 +739,7 @@ HTTPS 펌웨어 다운로드 예: `https://dapt.iptime.org/firmware/ver.220706.1
 
 클라이언트가 사용자 Root CA를 신뢰하도록 별도로 설정해야 합니다. 서버의 Root CA 설정 자체가 iOS/장치의 신뢰 저장소를 변경하지 않으며, 앱이 인증서를 고정(pin)했다면 사용자 CA 인증서도 거부할 수 있습니다. 기존 DIV01 패치는 인증서 검증 우회 패치이며, Root CA 내장 또는 HTTPS OTA 기능 추가 패치가 아닙니다. 따라서 기존 OTA 메타데이터는 HTTP 6002를 유지합니다. HTTPS 다운로드는 해당 CA를 신뢰하고 HTTPS를 지원하는 클라이언트에서 사용할 수 있습니다.
 
-대체 모드를 끄려면 `CUSTOM_BRIDGE_ENABLED=false`로 변경하고 서비스를 재시작합니다. 로컬 패치 버전 광고까지 끄려면 `LOCAL_OTA_ENABLED=false`도 설정합니다. 기본값은 둘 다 `false`입니다.
+대체 모드를 끄려면 `CUSTOM_BRIDGE_ENABLED=false`로 변경하고 서비스를 재시작합니다. custom HTTP/HTTPS의 로컬 패치 버전 광고는 `LOCAL_OTA_ENABLED`로 선택하며 기본값은 `false`입니다. 6002의 로컬 버전 응답에는 영향을 주지 않습니다.
 
 ### 웹에서 포트별 모드 선택
 
@@ -759,7 +759,7 @@ API: `GET /api/ports`로 고정 포트와 현재 모드를 조회하고 `POST /a
 
 ### 추가 서비스 포트 및 접근 기록
 
-기본 라우팅은 **6002: Bridge HTTP/펌웨어 처리**, **8885: Bridge MQTT/TLS 처리**, **나머지 활성 TCP 포트: 접속 로깅 후 원본 `dapt.iptime.org`의 동일 포트로 바이트 그대로 bypass**입니다. 원본 IP는 LAN DNS 대신 공용 DNS에서 조회합니다. 내부 MQTT의 사용 여부·Host는 이 라우팅에 영향을 주지 않습니다. 6002·8885는 `PORT_SERVICES_FILE`에 항목이 남아 있어도 Bridge가 직접 처리합니다. 6002에서 로컬 펌웨어가 처리하지 않는 HTTP 요청은 원본으로 전달합니다. 관리 포트 33301(선택적 HTTPS 33302)은 대시보드 전용입니다.
+기본 라우팅은 **6002: Bridge HTTP/펌웨어 처리**, **8885: Bridge MQTT/TLS 처리**, **나머지 활성 TCP 포트: 접속 로깅 후 원본 `dapt.iptime.org`의 동일 포트로 바이트 그대로 bypass**입니다. 원본 IP는 LAN DNS 대신 공용 DNS에서 조회합니다. 내부 MQTT의 사용 여부·Host는 이 라우팅에 영향을 주지 않습니다. 6002·8885는 `PORT_SERVICES_FILE`에 항목이 남아 있어도 Bridge가 직접 처리합니다. 6002의 버전 조회는 항상 로컬 DIV01 정보를 반환합니다(준비 전 503). 그 외 로컬 펌웨어가 처리하지 않는 HTTP 요청은 원본으로 전달합니다. 관리 포트 33301(선택적 HTTPS 33302)은 대시보드 전용입니다.
 
 기본 모드(`CUSTOM_BRIDGE_ENABLED=false`)에서는 `CUSTOM_TCP_ROUTES`와 `PORT_SERVICES_FILE`을 읽지 않습니다. 다른 포트의 TLS 종료·시뮬레이션은 custom 모드를 명시적으로 활성화한 경우에만 적용됩니다.
 

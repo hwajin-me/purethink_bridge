@@ -52,8 +52,20 @@ test('firmware is available offline, ranges/HEAD work, metadata waits for verifi
   online = true;
   await Promise.all([store.prepare(), store.prepare()]); assert.equal(downloads, 2);
   assert.equal(store.state.status, 'ready');
-  const metadata = await (await fetch(`${url}/api/FirmwareVersionCombined`)).json();
-  assert.equal(metadata.LastVersionDiv, PATCHED);
+  for (const route of ['/version/combined', '/api/FirmwareVersionCombined', '/api/GetFirmwareVersionCombined', '/API/GetFirmwareVersionCombined/?device=DIV01']) {
+    for (const method of ['GET', 'POST']) {
+      const response = await fetch(`${url}${route}`, { method });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      const metadata = await response.json();
+      assert.equal(metadata.LastVersionDiv, PATCHED);
+      assert.equal(metadata.PathDiv, `/firmware/${PATCHED}.bin`);
+      assert.equal(hash(Buffer.from(await (await fetch(`${url}${metadata.PathDiv}`)).arrayBuffer())), HASHES[PATCHED]);
+    }
+  }
+  const metadataHead = await fetch(`${url}/version/combined`, { method: 'HEAD' });
+  assert.equal(metadataHead.status, 200);
+  assert.equal((await metadataHead.text()), '');
   for (const version of [ORIGINAL, PATCHED]) {
     const response = await fetch(`${url}/firmware/${version}.bin`);
     assert.equal(hash(Buffer.from(await response.arrayBuffer())), HASHES[version]);

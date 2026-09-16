@@ -120,7 +120,7 @@ const state = {
     lastError: null,
     messageSeq: 0,
     messages: [],
-    origin: { dnsServers: DNS_SERVERS, addresses: [], server: null, lastError: null, mqttPort: DEVICE_MQTT_PORT, httpPort: ORIGIN_HTTP_PORT, localOta: LOCAL_OTA_ENABLED }
+    origin: { dnsServers: DNS_SERVERS, addresses: [], server: null, lastError: null, mqttPort: DEVICE_MQTT_PORT, httpPort: ORIGIN_HTTP_PORT, localOta: true }
   }
 };
 
@@ -608,7 +608,7 @@ app.post('/api/firmware/build', (req, res) => {
 });
 const proxyError = (error) => { state.bridge.origin.lastError = error.message; };
 { // The firmware/HTTP listener is always owned by Bridge.
-  const originHttp = createOriginProxy({ lookup: origin.lookup, localOta: LOCAL_OTA_ENABLED,
+  const originHttp = createOriginProxy({ lookup: origin.lookup, localOta: true,
     firmware, onError: proxyError });
   observe(originHttp, ORIGIN_HTTP_PORT, 'origin-http').listen(ORIGIN_HTTP_PORT, DEVICE_MQTT_HOST, () => {
     console.log(`Origin HTTP proxy listening on ${DEVICE_MQTT_HOST}:${ORIGIN_HTTP_PORT}`);

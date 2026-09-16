@@ -58,7 +58,7 @@ test('web API switches live bypass/proxy/custom with logs, validation and restar
     };
   `);
   const env = { ...process.env, DATA_DIR: dir, HTTP_PORT: String(dashboard), DEVICE_MQTT_PORT: String(mqttPort), ORIGIN_HTTP_PORT: String(httpPort),
-    ORIGIN_TCP_PORTS: String(routePort), FIRMWARE_AUTO_PREPARE: 'false', CUSTOM_BRIDGE_ENABLED: 'false', INTERNAL_MQTT_ENABLED: 'false' };
+    LOCAL_OTA_ENABLED: 'false', ORIGIN_TCP_PORTS: String(routePort), FIRMWARE_AUTO_PREPARE: 'false', CUSTOM_BRIDGE_ENABLED: 'false', INTERNAL_MQTT_ENABLED: 'false' };
   let output = '';
   function start() { const child = spawn(process.execPath, ['--import', preload, 'src/index.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] }); child.stdout.on('data', (v) => output += v); child.stderr.on('data', (v) => output += v); return child; }
   let child = start();
@@ -68,6 +68,13 @@ test('web API switches live bypass/proxy/custom with logs, validation and restar
   await ready();
   const initial = await (await fetch(`${base}/api/ports`)).json();
   assert.equal(initial.ports[0].mode, 'bypass');
+  // The core HTTP listener must not fall back to origin metadata, even with a legacy false flag.
+  for (const route of ['/version/combined', '/api/FirmwareVersionCombined', '/api/GetFirmwareVersionCombined']) {
+    const response = await fetch(`http://127.0.0.1:${httpPort}${route}`);
+    assert.equal(response.status, 503);
+    assert.match(await response.text(), /Verified DIV01 firmware is not ready/);
+  }
+  assert.equal((await (await fetch(`${base}/api/status`)).json()).state.bridge.origin.localOta, true);
   assert.deepEqual(initial.fixed.map((entry) => entry.port), [httpPort, mqttPort]);
   assert.equal(await exchange(routePort, 'bypass bytes'), 'bypass bytes');
   const update = (value, port = routePort) => fetch(`${base}/api/ports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ portRouting: { [port]: value } }) });

@@ -471,6 +471,7 @@ CUSTOM_BRIDGE_ENABLED=false
 # HTTPS_PORT=443
 # DASHBOARD_HTTPS_PORT=33302
 # PORT_SERVICES_FILE=/var/lib/purethink-bridge/services.json
+# Only controls optional custom HTTP/HTTPS; port 6002 always serves local DIV01 metadata.
 LOCAL_OTA_ENABLED=false
 LOCAL_OTA_PORT=16003
 FIRMWARE_DIR=/var/lib/purethink-ota/firmware
@@ -576,7 +577,7 @@ JS
   else
     apt-get clean
   fi
-  printf '\nBridge: http://<LXC-IP>:33301\nOrigin proxy: http://<LXC-IP>:6002 (local DIV01 OTA: 127.0.0.1:16003)\nData: %s\nUpdate: bridge update (root)\nEnable optional internal MQTT in the dashboard if needed. Follow README UniFi DNS setup; enable local DIV01 OTA only when needed.\n' "$PB_DATA"
+  printf '\nBridge: http://<LXC-IP>:33301\nOrigin proxy: http://<LXC-IP>:6002 (local DIV01 OTA: 127.0.0.1:16003)\nData: %s\nUpdate: bridge update (root)\nEnable optional internal MQTT in the dashboard if needed. Follow README UniFi DNS setup; Port 6002 serves verified local DIV01 version metadata.\n' "$PB_DATA"
 }
 
 # Also supports the Community Scripts bash -c invocation and curl | bash.
