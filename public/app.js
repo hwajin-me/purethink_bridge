@@ -17,10 +17,6 @@ function setTime(id, value) {
   el.classList.add('time');
 }
 
-function inlineTime(value) {
-  return String(value || '-').replace(/\s*\n\s*/g, ' ');
-}
-
 function counts(obj) {
   return `${obj.rx || 0} / ${obj.tx || 0}`;
 }
@@ -55,13 +51,6 @@ function renderMessages(messages) {
   stream.scrollTop = 0;
 }
 
-function renderDnat(dnat) {
-  setStatus('dnatStatus', dnat?.status || 'unknown');
-  setText('dnatChecked', inlineTime(dnat?.lastChecked));
-  setText('dnatAction', dnat?.lastAction);
-  setText('dnatError', dnat?.lastError);
-}
-
 async function loadStatus() {
   const res = await fetch('/api/status');
   const data = await res.json();
@@ -93,7 +82,15 @@ async function loadStatus() {
   setText('bridgeCounts', counts(state.bridge));
   setText('droppedLoops', String(state.bridge.droppedLoopMessages || 0));
   setText('bridgeError', state.bridge.lastError);
-  renderDnat(state.bridge.dnat);
+  const origin = state.bridge.origin;
+  setText('originAddresses', origin.addresses.join(', '));
+  setText('originDns', origin.server);
+  setText('originError', origin.lastError);
+  setText('originPorts', [origin.mqttPort, origin.httpPort, ...(origin.tcpPorts || [])].join(', '));
+  setText('originOta', origin.localOta ? 'DIV01 patch enabled' : 'Manufacturer passthrough');
+  setText('firmwareStatus', state.bridge.firmware?.status);
+  setText('firmwareAvailable', state.bridge.firmware?.available.join(', '));
+  setText('firmwareError', state.bridge.firmware?.lastError);
   renderMessages(state.bridge.messages || []);
 }
 
@@ -107,15 +104,6 @@ async function loadConfig() {
   $('password').value = '';
   $('clientId').value = cfg.internalMqtt.clientId || 'purethink-bridge';
   $('topic').value = cfg.internalMqtt.topic || '/things/#';
-
-  $('routerHost').value = cfg.routerDnat.host || '';
-  $('routerPort').value = cfg.routerDnat.port || 22;
-  $('routerUsername').value = cfg.routerDnat.username || '';
-  $('routerPassword').value = '';
-  $('dnatDeviceIp').value = cfg.routerDnat.deviceIp || '';
-  $('dnatManufacturerIp').value = cfg.routerDnat.manufacturerIp || '221.149.135.231';
-  $('dnatBridgeIp').value = cfg.routerDnat.bridgeIp || window.location.hostname || '192.168.0.4';
-  $('dnatMqttPort').value = cfg.routerDnat.mqttPort || 8885;
 }
 
 async function saveConfig(event) {
@@ -127,38 +115,21 @@ async function saveConfig(event) {
       port: Number($('port').value || 1883),
       username: $('username').value,
       password: $('password').value,
+      clearPassword: $('clearPassword').checked,
       clientId: $('clientId').value.trim() || 'purethink-bridge',
       topic: $('topic').value.trim() || '/things/#'
     },
   };
-  await fetch('/api/config', {
+  const response = await fetch('/api/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
-  await loadStatus();
-}
-
-async function saveDnatConfig(event) {
-  event.preventDefault();
-  const body = {
-    routerDnat: {
-      host: $('routerHost').value.trim(),
-      port: Number($('routerPort').value || 22),
-      username: $('routerUsername').value.trim(),
-      password: $('routerPassword').value,
-      deviceIp: $('dnatDeviceIp').value.trim(),
-      manufacturerIp: $('dnatManufacturerIp').value.trim(),
-      bridgeIp: $('dnatBridgeIp').value.trim(),
-      mqttPort: Number($('dnatMqttPort').value || 8885)
-    }
-  };
-  await fetch('/api/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  $('routerPassword').value = '';
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || '설정 저장 실패');
+  $('password').value = '';
+  $('clearPassword').checked = false;
+  setText('configMessage', '저장했습니다.');
   await loadStatus();
 }
 
@@ -167,32 +138,12 @@ async function post(path) {
   await loadStatus();
 }
 
-async function dnatAction(action) {
-  const buttons = [$('checkDnat'), $('applyDnat'), $('removeDnat')];
-  buttons.forEach((button) => { button.disabled = true; });
-  try {
-    const res = await fetch(`/api/router-dnat/${action}`, { method: 'POST' });
-    const data = await res.json();
-    renderDnat(data.state);
-  } finally {
-    buttons.forEach((button) => { button.disabled = false; });
-    await loadStatus();
-  }
-}
-
-async function refreshDashboard() {
-  await loadStatus();
-  await dnatAction('status');
-}
-
-$('refresh').addEventListener('click', refreshDashboard);
-$('configForm').addEventListener('submit', saveConfig);
-$('dnatForm').addEventListener('submit', saveDnatConfig);
+$('refresh').addEventListener('click', loadStatus);
+$('configForm').addEventListener('submit', (event) => {
+  saveConfig(event).catch((error) => setText('configMessage', error.message));
+});
 $('reconnectManufacturer').addEventListener('click', () => post('/api/reconnect/manufacturer'));
 $('reconnectInternal').addEventListener('click', () => post('/api/reconnect/internal'));
-$('checkDnat').addEventListener('click', () => dnatAction('status'));
-$('applyDnat').addEventListener('click', () => dnatAction('apply'));
-$('removeDnat').addEventListener('click', () => dnatAction('remove'));
 $('clearPayloads').addEventListener('click', async () => {
   const res = await fetch('/api/status');
   const data = await res.json();
@@ -201,5 +152,15 @@ $('clearPayloads').addEventListener('click', async () => {
   renderMessages([]);
 });
 
-loadConfig().then(refreshDashboard);
+loadConfig().then(loadStatus);
 setInterval(loadStatus, 3000);
+
+$('prepareFirmware').addEventListener('click', async () => {
+  $('prepareFirmware').disabled = true;
+  try {
+    const response = await fetch('/api/firmware/prepare', { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Firmware preparation failed');
+  } catch (error) { setText('firmwareError', error.message); }
+  finally { $('prepareFirmware').disabled = false; await loadStatus(); }
+});

@@ -232,11 +232,6 @@ form {
   padding: 8px 10px;
 }
 
-.dnat-form {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 12px;
-}
-
 label {
   display: grid;
   gap: 6px;
@@ -284,20 +279,8 @@ input[type="checkbox"] {
   white-space: nowrap;
 }
 
-.dnat-status-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  margin-top: 14px;
-}
-
-.dnat-status {
-  margin-top: 0;
-  margin-bottom: 0;
-}
-
 @media (max-width: 920px) {
-  .status-grid, form, .internal-form, .dnat-form {
+  .status-grid, form, .internal-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -317,7 +300,7 @@ input[type="checkbox"] {
     flex-direction: column;
   }
 
-  .status-grid, .settings-grid, form, .internal-form, .dnat-form {
+  .status-grid, .settings-grid, form, .internal-form {
     grid-template-columns: 1fr;
   }
 
@@ -325,11 +308,10 @@ input[type="checkbox"] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .dnat-status-grid {
-    grid-template-columns: 1fr;
-  }
-
   .internal-form > button {
     width: 100%;
   }
 }
+
+.origin-status { margin-top: 16px; }
+.settings p { font-size: 13px; line-height: 1.6; }

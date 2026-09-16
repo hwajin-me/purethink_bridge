@@ -7,7 +7,11 @@ import Aedes from 'aedes';
 import express from 'express';
 import mqtt from 'mqtt';
 import selfsigned from 'selfsigned';
-import { Client as SshClient } from 'ssh2';
+import { createOriginLookup, DNS_SERVERS } from './origin.js';
+import { createOriginProxy, createTcpProxy } from './origin-proxy.js';
+import { createFirmwareStore } from './firmware.js';
+import { createMirrorTracker } from './mirror-tracker.js';
+import { mergeInternalMqtt, validateInternalMqtt, writeConfig } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,7 +23,8 @@ const DEVICE_MQTT_DISPLAY_HOST = process.env.DEVICE_MQTT_DISPLAY_HOST || DEVICE_
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const CERT_DIR = path.join(DATA_DIR, 'certs');
 const DISPLAY_TIME_ZONE = process.env.TZ || 'Asia/Seoul';
-const DNAT_CHAIN = 'PURETHINK_DNAT';
+const ORIGIN_HTTP_PORT = Number(process.env.ORIGIN_HTTP_PORT || 6002);
+const LOCAL_OTA_ENABLED = process.env.LOCAL_OTA_ENABLED === 'true';
 
 const MANUFACTURER = {
   host: 'dapt.iptime.org',
@@ -29,24 +34,15 @@ const MANUFACTURER = {
 };
 
 const DEFAULT_CONFIG = {
+  version: 1,
   internalMqtt: {
-    enabled: false,
-    host: '',
+    enabled: process.env.INTERNAL_MQTT_ENABLED !== 'false',
+    host: process.env.INTERNAL_MQTT_HOST || '127.0.0.1',
     port: 1883,
     username: '',
     password: '',
     clientId: 'purethink-bridge',
     topic: '/things/#'
-  },
-  routerDnat: {
-    host: '192.168.0.1',
-    port: 22,
-    username: '',
-    password: '',
-    deviceIp: '',
-    manufacturerIp: '221.149.135.231',
-    bridgeIp: DEVICE_MQTT_DISPLAY_HOST === '0.0.0.0' ? '' : DEVICE_MQTT_DISPLAY_HOST,
-    mqttPort: DEVICE_MQTT_PORT
   }
 };
 
@@ -98,21 +94,17 @@ const state = {
     lastError: null,
     messageSeq: 0,
     messages: [],
-    dnat: {
-      status: 'unknown',
-      lastChecked: null,
-      lastAction: null,
-      lastError: null,
-      output: ''
-    }
+    origin: { dnsServers: DNS_SERVERS, addresses: [], server: null, lastError: null, mqttPort: DEVICE_MQTT_PORT, httpPort: ORIGIN_HTTP_PORT, localOta: LOCAL_OTA_ENABLED }
   }
 };
 
 let config = DEFAULT_CONFIG;
 let manufacturerClient = null;
 let internalClient = null;
-const recentMirrors = new Map();
+const recentMirrors = createMirrorTracker();
 const manufacturerSubscriptions = new Set();
+const deviceClients = new Map();
+const origin = createOriginLookup({ onUpdate: (update) => Object.assign(state.bridge.origin, update) });
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -124,164 +116,19 @@ function loadConfig() {
     saveConfig(DEFAULT_CONFIG);
   }
   const loaded = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  return {
+  const migrated = {
     ...DEFAULT_CONFIG,
-    ...loaded,
-    internalMqtt: { ...DEFAULT_CONFIG.internalMqtt, ...(loaded.internalMqtt || {}) },
-    routerDnat: { ...DEFAULT_CONFIG.routerDnat, ...(loaded.routerDnat || {}) }
+    internalMqtt: { ...DEFAULT_CONFIG.internalMqtt, ...(loaded.internalMqtt || {}) }
   };
+  // Old releases saved a disabled, empty placeholder. Preserve explicit broker choices.
+  if (loaded.version !== 1 && !loaded.internalMqtt?.host) migrated.internalMqtt = { ...migrated.internalMqtt, host: DEFAULT_CONFIG.internalMqtt.host, enabled: DEFAULT_CONFIG.internalMqtt.enabled };
+  if (loaded.routerDnat || loaded.version !== 1) saveConfig(migrated);
+  return migrated;
 }
 
 function saveConfig(nextConfig) {
   ensureDir(DATA_DIR);
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(nextConfig, null, 2));
-}
-
-function validIPv4(value) {
-  if (typeof value !== 'string') return false;
-  const parts = value.trim().split('.');
-  return parts.length === 4 && parts.every((part) => {
-    if (!/^\d{1,3}$/.test(part)) return false;
-    const num = Number(part);
-    return num >= 0 && num <= 255 && String(num) === String(Number(part));
-  });
-}
-
-function validPort(value) {
-  const port = Number(value);
-  return Number.isInteger(port) && port > 0 && port <= 65535;
-}
-
-function validateDnatConfig(dnat) {
-  const required = [
-    ['router host', dnat.host],
-    ['device IP', dnat.deviceIp],
-    ['manufacturer IP', dnat.manufacturerIp],
-    ['bridge IP', dnat.bridgeIp]
-  ];
-  for (const [label, value] of required) {
-    if (!validIPv4(value)) {
-      throw new Error(`Invalid ${label}`);
-    }
-  }
-  if (!validPort(dnat.port)) throw new Error('Invalid router SSH port');
-  if (!validPort(dnat.mqttPort)) throw new Error('Invalid MQTT port');
-  if (!dnat.username) throw new Error('Router username is empty');
-  if (!dnat.password) throw new Error('Router password is empty');
-}
-
-function dnatRuleArgs(dnat) {
-  const mqttPort = Number(dnat.mqttPort);
-  return {
-    jump: `-j ${DNAT_CHAIN}`,
-    prerouting: `-s ${dnat.deviceIp}/32 -d ${dnat.manufacturerIp}/32 -p tcp -m tcp --dport ${mqttPort} -j DNAT --to-destination ${dnat.bridgeIp}:${mqttPort}`,
-    preroutingAnyDestination: `-s ${dnat.deviceIp}/32 -p tcp -m tcp --dport ${mqttPort} -j DNAT --to-destination ${dnat.bridgeIp}:${mqttPort}`
-  };
-}
-
-function routerScript(action, dnat) {
-  const rules = dnatRuleArgs(dnat);
-  if (action === 'status') {
-    return [
-      'set -e',
-      `if iptables -t nat -S ${DNAT_CHAIN} >/dev/null 2>&1; then echo CHAIN=present; else echo CHAIN=missing; fi`,
-      `if iptables -t nat -S PREROUTING | grep -F -- '${rules.jump}' >/dev/null; then echo JUMP=present; else echo JUMP=missing; fi`,
-      `if iptables -t nat -S ${DNAT_CHAIN} 2>/dev/null | grep -F -- '${rules.preroutingAnyDestination}' >/dev/null || iptables -t nat -S PREROUTING | grep -F -- '${rules.preroutingAnyDestination}' >/dev/null; then echo DNAT=present; else echo DNAT=missing; fi`
-    ].join('\n');
-  }
-  if (action === 'apply') {
-    return [
-      'set -e',
-      `iptables -t nat -N ${DNAT_CHAIN} 2>/dev/null || true`,
-      `iptables -t nat -S PREROUTING | grep -F -- '${rules.jump}' >/dev/null || iptables -t nat -I PREROUTING 1 ${rules.jump}`,
-      `iptables -t nat -S ${DNAT_CHAIN} | grep -F -- '${rules.preroutingAnyDestination}' >/dev/null || iptables -t nat -A ${DNAT_CHAIN} ${rules.preroutingAnyDestination}`,
-      `conntrack -D -s ${dnat.deviceIp} -p tcp --dport ${Number(dnat.mqttPort)} 2>/dev/null || true`,
-      'echo DNAT=applied'
-    ].join('\n');
-  }
-  if (action === 'remove') {
-    return [
-      'set -e',
-      `while iptables -t nat -D PREROUTING ${rules.prerouting} 2>/dev/null; do :; done`,
-      `while iptables -t nat -D PREROUTING ${rules.preroutingAnyDestination} 2>/dev/null; do :; done`,
-      `while iptables -t nat -D ${DNAT_CHAIN} ${rules.preroutingAnyDestination} 2>/dev/null; do :; done`,
-      `while iptables -t nat -D PREROUTING ${rules.jump} 2>/dev/null; do :; done`,
-      `iptables -t nat -F ${DNAT_CHAIN} 2>/dev/null || true`,
-      `iptables -t nat -X ${DNAT_CHAIN} 2>/dev/null || true`,
-      `conntrack -D -s ${dnat.deviceIp} -p tcp --dport ${Number(dnat.mqttPort)} 2>/dev/null || true`,
-      'echo DNAT=removed'
-    ].join('\n');
-  }
-  throw new Error('Unknown DNAT action');
-}
-
-function runRouterCommand(action) {
-  const dnat = config.routerDnat;
-  validateDnatConfig(dnat);
-  const script = routerScript(action, dnat);
-  return new Promise((resolve, reject) => {
-    const client = new SshClient();
-    let output = '';
-    let settled = false;
-
-    const finish = (err, result) => {
-      if (settled) return;
-      settled = true;
-      client.end();
-      if (err) reject(err);
-      else resolve(result);
-    };
-
-    client.on('ready', () => {
-      client.exec(script, (err, stream) => {
-        if (err) {
-          finish(err);
-          return;
-        }
-        stream.on('close', (code) => {
-          if (code === 0) {
-            finish(null, output.trim());
-            return;
-          }
-          finish(new Error(output.trim() || `Router command failed with exit code ${code}`));
-        });
-        stream.on('data', (data) => {
-          output += data.toString();
-        });
-        stream.stderr.on('data', (data) => {
-          output += data.toString();
-        });
-      });
-    });
-    client.on('error', (err) => finish(err));
-    client.connect({
-      host: dnat.host,
-      port: Number(dnat.port || 22),
-      username: dnat.username,
-      password: dnat.password,
-      readyTimeout: 10000
-    });
-  });
-}
-
-function updateDnatState(action, output, err = null) {
-  state.bridge.dnat.lastChecked = displayTime();
-  state.bridge.dnat.lastAction = action;
-  state.bridge.dnat.lastError = err ? err.message : null;
-  state.bridge.dnat.output = output || '';
-  if (err) {
-    state.bridge.dnat.status = 'error';
-  } else if (output.includes('CHAIN=present') && output.includes('JUMP=present') && output.includes('DNAT=present')) {
-    state.bridge.dnat.status = 'active';
-  } else if (output.includes('DNAT=applied')) {
-    state.bridge.dnat.status = 'active';
-  } else if (output.includes('DNAT=removed')) {
-    state.bridge.dnat.status = 'inactive';
-  } else if (output.includes('missing')) {
-    state.bridge.dnat.status = 'inactive';
-  } else {
-    state.bridge.dnat.status = 'unknown';
-  }
+  writeConfig(CONFIG_PATH, { ...nextConfig, version: 1 });
 }
 
 function ensureCertificate() {
@@ -316,17 +163,19 @@ function subscribeManufacturerForClient(clientId) {
   if (!clientId || !manufacturerClient?.connected) return;
   const topic = topicForClient(clientId);
   if (manufacturerSubscriptions.has(topic)) return;
-  manufacturerClient.subscribe(topic, { qos: 0 }, (err) => {
-    if (err) {
-      state.manufacturer.lastError = err.message;
+  const client = manufacturerClient;
+  client.subscribe(topic, { qos: 0 }, (err, granted) => {
+    if (client !== manufacturerClient) return;
+    if (!deviceClients.has(clientId)) {
+      client.unsubscribe(topic);
+      return;
+    }
+    if (err || granted?.some((entry) => entry.qos === 128)) {
+      state.manufacturer.lastError = err?.message || `MQTT subscription denied: ${topic}`;
       return;
     }
     manufacturerSubscriptions.add(topic);
   });
-}
-
-function payloadKey(topic, payload) {
-  return `${topic}\n${Buffer.from(payload).toString('base64')}`;
 }
 
 function payloadText(payload) {
@@ -350,15 +199,11 @@ function recordMessage(direction, topic, payload) {
 }
 
 function rememberMirror(target, topic, payload) {
-  const key = `${target}:${payloadKey(topic, payload)}`;
-  recentMirrors.set(key, Date.now());
-  setTimeout(() => recentMirrors.delete(key), 5000).unref();
+  recentMirrors.remember(target, topic, payload);
 }
 
 function wasMirroredTo(target, topic, payload) {
-  const key = `${target}:${payloadKey(topic, payload)}`;
-  if (!recentMirrors.has(key)) return false;
-  recentMirrors.delete(key);
+  if (!recentMirrors.consume(target, topic, payload)) return false;
   state.bridge.droppedLoopMessages += 1;
   return true;
 }
@@ -407,44 +252,55 @@ function connectManufacturer() {
   }
 
   state.manufacturer.status = 'reconnecting';
-  manufacturerClient = mqtt.connect({
+  const client = manufacturerClient = mqtt.connect({
     protocol: MANUFACTURER.protocol,
     host: MANUFACTURER.host,
+    servername: MANUFACTURER.host,
+    lookup: origin.lookup,
+    family: 4,
     port: MANUFACTURER.port,
     rejectUnauthorized: MANUFACTURER.rejectUnauthorized,
     protocolVersion: 4,
     reconnectPeriod: 5000,
     connectTimeout: 10000,
-    clean: true
+    clean: true,
+    resubscribe: false
   });
 
-  manufacturerClient.on('connect', () => {
+  client.on('connect', () => {
+    if (manufacturerClient !== client) return;
+    recentMirrors.clear('manufacturer');
     state.manufacturer.status = 'connected';
     state.manufacturer.lastConnected = displayTime();
     state.manufacturer.lastError = null;
     manufacturerSubscriptions.clear();
-    subscribeManufacturerForClient(state.device.clientId);
+    for (const clientId of deviceClients.keys()) subscribeManufacturerForClient(clientId);
   });
 
-  manufacturerClient.on('message', (topic, payload) => {
+  client.on('message', (topic, payload) => {
+    if (manufacturerClient !== client) return;
     if (!topicMatchesThings(topic)) return;
     if (wasMirroredTo('manufacturer', topic, payload)) return;
     state.manufacturer.rx += 1;
     recordMessage('from-manufacturer', topic, payload);
     publishToDevice(topic, payload);
+    publishToInternal(topic, payload);
   });
 
-  manufacturerClient.on('reconnect', () => {
+  client.on('reconnect', () => {
+    if (manufacturerClient !== client) return;
     state.manufacturer.status = 'reconnecting';
   });
 
-  manufacturerClient.on('close', () => {
+  client.on('close', () => {
+    if (manufacturerClient !== client) return;
     if (state.manufacturer.status !== 'reconnecting') {
       state.manufacturer.status = 'offline';
     }
   });
 
-  manufacturerClient.on('error', (err) => {
+  client.on('error', (err) => {
+    if (manufacturerClient !== client) return;
     state.manufacturer.status = 'reconnecting';
     state.manufacturer.lastError = err.message;
   });
@@ -480,43 +336,58 @@ function connectInternal() {
   if (config.internalMqtt.username) options.username = config.internalMqtt.username;
   if (config.internalMqtt.password) options.password = config.internalMqtt.password;
 
-  internalClient = mqtt.connect(options);
+  const client = internalClient = mqtt.connect(options);
 
-  internalClient.on('connect', () => {
+  client.on('connect', () => {
+    if (internalClient !== client) return;
+    recentMirrors.clear('internal');
     state.internal.status = 'connected';
     state.internal.lastConnected = displayTime();
     state.internal.lastError = null;
-    internalClient.subscribe(config.internalMqtt.topic || '/things/#', { qos: 0 });
+    client.subscribe(config.internalMqtt.topic || '/things/#', { qos: 0 }, (error, granted) => {
+      if (client !== internalClient) return;
+      if (error || granted?.some((entry) => entry.qos === 128)) {
+        state.internal.status = 'subscription-error';
+        state.internal.lastError = error?.message || 'MQTT subscription denied';
+      }
+    });
   });
 
-  internalClient.on('message', (topic, payload) => {
+  client.on('message', (topic, payload) => {
+    if (internalClient !== client) return;
     if (!topicMatchesThings(topic)) return;
     if (wasMirroredTo('internal', topic, payload)) return;
     state.internal.rx += 1;
     recordMessage('from-internal', topic, payload);
     publishToDevice(topic, payload);
+    publishToManufacturer(topic, payload);
   });
 
-  internalClient.on('reconnect', () => {
+  client.on('reconnect', () => {
+    if (internalClient !== client) return;
     state.internal.status = 'reconnecting';
   });
 
-  internalClient.on('close', () => {
+  client.on('close', () => {
+    if (internalClient !== client) return;
     if (state.internal.status !== 'reconnecting') {
       state.internal.status = 'offline';
     }
   });
 
-  internalClient.on('error', (err) => {
+  client.on('error', (err) => {
+    if (internalClient !== client) return;
     state.internal.status = 'reconnecting';
     state.internal.lastError = err.message;
   });
 }
 
 config = loadConfig();
+validateInternalMqtt(config.internalMqtt);
 const aedes = new Aedes();
 
 aedes.on('client', (client) => {
+  deviceClients.set(client.id, client);
   state.device.status = 'connected';
   state.device.clientId = client?.id || null;
   state.device.lastSeen = displayTime();
@@ -524,8 +395,14 @@ aedes.on('client', (client) => {
 });
 
 aedes.on('clientDisconnect', (client) => {
+  if (deviceClients.get(client?.id) !== client) return;
+  deviceClients.delete(client?.id);
+  const topic = topicForClient(client?.id);
+  manufacturerSubscriptions.delete(topic);
+  if (manufacturerClient?.connected) manufacturerClient.unsubscribe(topic);
   if (state.device.clientId === client?.id) {
-    state.device.status = 'offline';
+    state.device.clientId = [...deviceClients.keys()].at(-1) || null;
+    state.device.status = deviceClients.size ? 'connected' : 'offline';
     state.device.lastSeen = displayTime();
   }
 });
@@ -564,10 +441,6 @@ app.get('/api/status', (_req, res) => {
       internalMqtt: {
         ...config.internalMqtt,
         password: config.internalMqtt.password ? '********' : ''
-      },
-      routerDnat: {
-        ...config.routerDnat,
-        password: config.routerDnat.password ? '********' : ''
       }
     }
   });
@@ -579,38 +452,20 @@ app.get('/api/config', (_req, res) => {
     internalMqtt: {
       ...config.internalMqtt,
       password: ''
-    },
-    routerDnat: {
-      ...config.routerDnat,
-      password: ''
     }
   });
 });
 
 app.post('/api/config', (req, res) => {
-  const next = {
-    ...config,
-    internalMqtt: {
-      ...config.internalMqtt,
-      ...(req.body.internalMqtt || {})
-    }
-  };
-  if (!req.body.internalMqtt?.password && config.internalMqtt.password) {
-    next.internalMqtt.password = config.internalMqtt.password;
+  try {
+    const next = { internalMqtt: mergeInternalMqtt(config.internalMqtt, req.body?.internalMqtt) };
+    saveConfig(next);
+    config = next;
+    connectInternal();
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
   }
-  if (req.body.routerDnat) {
-    next.routerDnat = {
-      ...config.routerDnat,
-      ...req.body.routerDnat
-    };
-    if (!req.body.routerDnat.password && config.routerDnat.password) {
-      next.routerDnat.password = config.routerDnat.password;
-    }
-  }
-  config = next;
-  saveConfig(config);
-  if (req.body.internalMqtt) connectInternal();
-  res.json({ ok: true });
 });
 
 app.post('/api/reconnect/manufacturer', (_req, res) => {
@@ -623,20 +478,39 @@ app.post('/api/reconnect/internal', (_req, res) => {
   res.json({ ok: true });
 });
 
-async function handleDnatAction(req, res) {
-  const action = req.params.action;
-  try {
-    const output = await runRouterCommand(action);
-    updateDnatState(action, output);
-    res.json({ ok: true, output, state: state.bridge.dnat });
-  } catch (err) {
-    updateDnatState(action, '', err);
-    res.status(400).json({ ok: false, error: err.message, state: state.bridge.dnat });
-  }
-}
-
-app.post('/api/router-dnat/:action(status|apply|remove)', handleDnatAction);
-
 app.listen(HTTP_PORT, '0.0.0.0', () => {
   console.log(`Dashboard listening on 0.0.0.0:${HTTP_PORT}`);
 });
+
+const firmware = createFirmwareStore({
+  directory: process.env.FIRMWARE_DIR || (fs.existsSync('/var/lib/purethink-ota/firmware')
+    ? '/var/lib/purethink-ota/firmware' : path.join(DATA_DIR, 'firmware')),
+  lookup: origin.lookup
+});
+state.bridge.firmware = firmware.state;
+await firmware.load();
+const prepareFirmware = () => firmware.prepare().catch((error) => console.error(error.message));
+if (process.env.FIRMWARE_AUTO_PREPARE !== 'false') {
+  void prepareFirmware();
+  setInterval(() => {
+    if (firmware.state.available.length < 2) void prepareFirmware();
+  }, 60000).unref();
+}
+app.post('/api/firmware/prepare', async (_req, res) => {
+  try { await firmware.prepare(); res.json({ ok: true, firmware: firmware.state }); }
+  catch (error) { res.status(502).json({ ok: false, error: error.message, firmware: firmware.state }); }
+});
+const proxyError = (error) => { state.bridge.origin.lastError = error.message; };
+const originHttp = createOriginProxy({ lookup: origin.lookup, localOta: LOCAL_OTA_ENABLED,
+  firmware, onError: proxyError });
+originHttp.listen(ORIGIN_HTTP_PORT, DEVICE_MQTT_HOST, () => {
+  console.log(`Origin HTTP proxy listening on ${DEVICE_MQTT_HOST}:${ORIGIN_HTTP_PORT}`);
+});
+const extraPorts = [...new Set((process.env.ORIGIN_TCP_PORTS || '').split(',').filter(Boolean).map(Number))];
+for (const port of extraPorts) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535 || [HTTP_PORT, DEVICE_MQTT_PORT, ORIGIN_HTTP_PORT, Number(process.env.LOCAL_OTA_PORT || 6003)].includes(port)) {
+    throw new Error(`Invalid or conflicting ORIGIN_TCP_PORTS port: ${port}`);
+  }
+  createTcpProxy({ port, lookup: origin.lookup, onError: proxyError }).listen(port, DEVICE_MQTT_HOST);
+}
+state.bridge.origin.tcpPorts = extraPorts;

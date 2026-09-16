@@ -8,9 +8,10 @@ Purethink 환기장치를 로컬망에서 안정적으로 사용하기 위한 MQ
 
 ```text
 Purethink 기기
-  -> 공유기 DNAT
-  -> Purethink Bridge Docker :8885
-       -> 제조사 MQTT dapt.iptime.org:8885
+  -> UniFi 내부 DNS: dapt.iptime.org = Bridge LAN IP
+  -> Purethink Bridge (LXC 또는 Docker) :8885
+       -> 공용 DNS로 조회한 원본 MQTT :8885
+앱/기기 HTTP :6002 -> Bridge HTTP 프록시 -> 공용 DNS로 조회한 원본 HTTP :6002
        -> 내부 MQTT 서버 :1883
             -> Home Assistant purethink custom component
 ```
@@ -30,28 +31,26 @@ Purethink 기기
 
 - 펌웨어 수정과 OTA는 항상 위험이 있습니다.
 - 잘못된 펌웨어를 올리면 기기가 부팅하지 않을 수 있습니다.
-- 공유기 DNAT 설정을 잘못하면 다른 장비의 통신에 영향을 줄 수 있습니다.
 - 먼저 제조사 서버와 앱에서 기기가 정상 동작하는 상태를 확인한 뒤 진행하세요.
-- 가능하면 공유기 DNAT는 특정 기기 IP에만 적용하세요.
 
 ## 준비물
 
 - Ubuntu 서버
-- Docker
+- Docker 설치 방식을 선택할 경우 Docker
 - Git
 - Home Assistant
 - 내부 MQTT 서버, 예: Mosquitto `1883`
 - Purethink 기기의 IP 주소
 - Purethink 기기의 device id, 예: `DIV01-ABCDEF`
 - Purethink 기기 펌웨어 `ver.220706.1630_DIV01.bin`
-- 공유기에서 iptables DNAT 설정 가능
+- UniFi 또는 내부 DNS에서 Host (A) 레코드 설정 가능
 
 이 문서의 예시는 다음 값을 사용합니다. 본인 환경에 맞게 바꿔서 사용하세요.
 
 ```text
 Ubuntu 서버 IP: 192.168.0.4
 기기 IP: 192.168.0.67
-제조사 MQTT IP: 221.149.135.231(CMD창에서 ping dapt.iptime.org 로 확인)
+원본 IP: 1.1.1.1 → 1.0.0.1 → 8.8.8.8 → 8.8.4.4로 직접 조회 (고정 IP 없음)
 브릿지 MQTT 포트: 8885
 브릿지 대시보드 포트: 33301
 내부 MQTT 포트: 1883
@@ -202,186 +201,208 @@ curl -L \
   '<ver.220706.1633_DIV01.bin 다운로드 URL>'
 ```
 
-## 3. OTA 서버 준비
+## 3. OTA 서버와 HTTP 대체
 
-기기 펌웨어 업데이트는 제조사 OTA 서버 `dapt.iptime.org:6002` 요청을 잠시 로컬 OTA 서버로 DNAT해서 진행합니다.
+일반 실행에서는 Bridge의 `6002`가 제조사 HTTP API와 펌웨어 요청을 원본에 전달합니다. 메서드, 경로·쿼리, 요청 본문, 응답 상태·헤더·바이너리를 스트리밍하고 원본 Host를 유지합니다. 공용 DNS 실패 시 502를 반환하며 내부 DNS로 되돌아가지 않습니다.
 
-임시 OTA 서버 폴더를 만듭니다.
+Bridge가 시작되면 DIV01 원본을 공용 DNS 경로로 내려받아 크기와 SHA-256을 검증한 뒤 `1633` 패치를 준비합니다. MQTT 시작은 다운로드를 기다리지 않습니다. 다운로드 실패는 상태에 표시하고 60초 간격으로 재시도합니다. Docker/직접 실행은 `DATA_DIR/firmware`, LXC는 설치 스크립트의 `/var/lib/purethink-ota/firmware`를 사용합니다. `FIRMWARE_DIR`로 경로를 바꾸거나 `FIRMWARE_AUTO_PREPARE=false`로 자동 준비를 끌 수 있습니다. 기존 정상 파일은 재사용하며 손상된 파일은 제공하지 않습니다.
 
-```bash
-mkdir -p ~/purethink-ota/firmware
-cp ver.220706.1633_DIV01.bin ~/purethink-ota/firmware/
-cd ~/purethink-ota
-```
+준비된 **DIV01 원본 `1630`과 패치 `1633` 파일은 OTA 광고 설정과 관계없이 6002에서 직접 다운로드**할 수 있습니다. 인터넷이 끊겨도 제공되며 GET/HEAD와 단일 HTTP Range 요청을 지원합니다. 다른 모델·파일은 원본으로 전달합니다. 패치 파일이 없을 때에는 503을 반환하고 준비되지 않은 패치 버전은 광고하지 않습니다.
 
-간단한 OTA 서버를 만듭니다.
+`LOCAL_OTA_ENABLED=true`는 `/version/combined`, `/api/FirmwareVersionCombined`, `/api/GetFirmwareVersionCombined`에서 검증된 DIV01 패치 버전을 안내하도록 합니다. 기본값 false에서는 제조사 버전 응답을 그대로 전달합니다. **DIV01 업데이트 작업에만 활성화하고, 다른 모델이 함께 있는 환경에서는 활성화하지 마세요.** 다른 모델의 패치는 검증되지 않았습니다. LXC의 기존 Python OTA 서비스(127.0.0.1:6003)는 진단/호환용으로 유지되지만 Bridge의 파일 제공에는 필요하지 않습니다.
+
+대시보드에서 Firmware 상태와 준비된 파일을 확인하고 `Prepare / Retry DIV01 Firmware`로 재시도할 수 있습니다. 기기 플래시는 자동으로 수행하지 않습니다. 수동 준비와 다운로드 예시:
 
 ```bash
-cat > purethink_ota_server.py <<'PY'
-#!/usr/bin/env python3
-import json
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import urlparse
-
-HOSTNAME = "dapt.iptime.org"
-PORT = 6002
-VERSION_DIV01 = "ver.220706.1633_DIV01"
-FIRMWARE_NAME = f"{VERSION_DIV01}.bin"
-FIRMWARE_PATH = f"/firmware/{FIRMWARE_NAME}"
-ROOT = Path(__file__).resolve().parent
-FIRMWARE_FILE = ROOT / "firmware" / FIRMWARE_NAME
-
-def firmware_payload():
-    return {
-        "LastVersionDiv": VERSION_DIV01,
-        "LastVersionThesoop": "ver.220706.1630_THESOOP",
-        "LastVersionDiv02": "ver.211231.1400_DIV02",
-        "LastVersionAC01": "ver.220307.1130_AC01",
-        "UpdateDate": "220706.1633",
-        "Hostname": HOSTNAME,
-        "Port": PORT,
-        "PathDiv": FIRMWARE_PATH,
-        "PathThesoop": "/firmware/ver.220706.1630_THESOOP.bin",
-        "PathDiv02": "/firmware/ver.211231.1400_DIV02.bin",
-        "PathAC01": "/firmware/ver.220307.1130_AC01.bin",
-        "PathTestDiv": FIRMWARE_PATH,
-        "PathTestThesoop": "/firmware/ver.220706.1630_THESOOP.bin",
-        "PathTestDiv02": "/firmware/ver.220404.1900_DIV02.bin",
-        "PathTestAC01": "/firmware/ver.220307.1130_AC01.bin",
-    }
-
-class Handler(BaseHTTPRequestHandler):
-    def _send_json(self, obj):
-        body = json.dumps(obj, separators=(",", ":")).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
-
-    def _send_firmware(self):
-        data = FIRMWARE_FILE.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(data)
-
-    def _handle(self):
-        parsed = urlparse(self.path)
-        print(self.client_address[0], self.command, self.path, flush=True)
-
-        if parsed.path.startswith("/firmware/") and parsed.path.endswith(".bin"):
-            return self._send_firmware()
-
-        lower_path = parsed.path.lower()
-        if "firmwareversioncombined" in lower_path or lower_path.endswith("/version/combined"):
-            return self._send_json(firmware_payload())
-        if "firmware" in lower_path:
-            return self._send_json(firmware_payload())
-
-        return self._send_json({"ok": True})
-
-    def do_GET(self):
-        self._handle()
-
-    def do_POST(self):
-        self._handle()
-
-    def do_PUT(self):
-        self._handle()
-
-    def do_HEAD(self):
-        self._handle()
-
-if __name__ == "__main__":
-    if not FIRMWARE_FILE.exists():
-        raise SystemExit(f"missing firmware: {FIRMWARE_FILE}")
-    print(f"serving {FIRMWARE_FILE} on 0.0.0.0:{PORT}", flush=True)
-    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
-PY
+npm run firmware:prepare
+# 인터넷 없이 이미 가진 정식 원본으로 준비 (동일한 해시 검증 적용)
+npm run firmware:prepare -- /path/to/ver.220706.1630_DIV01.bin
+# Docker 안에서도 동일하게 실행 가능
+docker exec purethink_bridge npm run firmware:prepare
+curl -fO http://<Bridge-IP>:6002/firmware/ver.220706.1633_DIV01.bin
+curl -I http://<Bridge-IP>:6002/firmware/ver.220706.1630_DIV01.bin
 ```
 
-OTA 서버를 실행합니다.
+## 4. UniFi 내부 DNS 설정
+
+Bridge에 고정 LAN IP를 할당하고 UniFi의 DNS 레코드에 다음 값을 등록합니다.
+
+| 항목 | 값 |
+| --- | --- |
+| Type | Host (A) |
+| Domain | `dapt.iptime.org` |
+| IP Address | Bridge의 LAN IPv4 (예: `192.168.0.4`) |
+| TTL | 전환 중에는 짧게, 예: 60초 |
+
+Network 9.4는 `Settings > Policy Table > Create New Policy > DNS`, 9.3은 `Settings > Policy Engine > DNS`에서 생성합니다. 클라이언트가 UniFi 게이트웨이를 DNS로 사용해야 적용됩니다. [Ubiquiti 공식 DNS 설정 문서](https://help.ui.com/hc/en-us/articles/15179064940439-UniFi-DNS-Records-and-Local-Hostnames)를 참고하세요.
+
+기기와 앱의 DHCP DNS도 해당 내부 DNS로 맞추고 연결을 재시작하여 이전 DNS 캐시·MQTT 연결을 갱신합니다. 클라이언트가 외부 DNS/DoH, IPv6 AAAA 또는 IP 하드코딩으로 우회하면 A 레코드만으로 전환되지 않습니다. `A`와 `AAAA` 응답 및 기기 연결을 확인하세요. 기본 Bridge 리스너는 IPv4입니다.
+
+Bridge에서 공용 DNS 네 곳으로 UDP/TCP 53이 직접 통과하도록 허용하세요. UniFi의 DNS 강제 리다이렉트·콘텐츠 필터가 이 트래픽을 내부 DNS로 가로채지 않도록 Bridge를 예외 처리해야 합니다. 원본 조회는 사설·루프백·자기 주소 응답을 거부합니다.
 
 ```bash
-python3 purethink_ota_server.py
+nslookup dapt.iptime.org <UniFi-DNS-IP>
+nslookup dapt.iptime.org 1.1.1.1
+curl -fsS http://<Bridge-IP>:33301/api/status
 ```
 
-별도 터미널에서 응답을 확인합니다.
+첫 번째는 Bridge IP, 두 번째는 원본 공인 IP가 나와야 합니다. 대시보드의 Origin IP/Public DNS에서도 원본 조회 상태를 확인할 수 있습니다. Bridge 자체는 DNS 서버가 아니므로 DHCP DNS를 Bridge IP로 지정하지 마세요.
 
-```bash
-curl -s http://127.0.0.1:6002/version/combined
-curl -I http://127.0.0.1:6002/firmware/ver.220706.1633_DIV01.bin
-```
+## 5. DNS 전환 원복
 
-퓨어싱크 앱을 실행하여 기기 선택 후 설정 화면까지 들어갑니다.
-
-## 4. OTA용 공유기 DNAT
-
-앱과 기기가 제조사 OTA 서버 대신 로컬 OTA 서버를 보게 하려면 공유기에서 `6002`를 잠시 DNAT합니다.
-
-제조사 OTA 서버 IP를 확인합니다.
-
-```bash
-nslookup dapt.iptime.org
-```
-
-예시에서는 `221.149.135.231`을 사용합니다.
-
-공유기 SSH에서 아래 명령을 그대로 실행합니다.
-
-```bash
-iptables -t nat -I PREROUTING 1 ! -s 192.168.0.4 -d 221.149.135.231 -p tcp --dport 6002 -j DNAT --to-destination 192.168.0.4:6002
-
-iptables -t nat -I POSTROUTING 1 ! -s 192.168.0.4 -d 192.168.0.4 -p tcp --dport 6002 -j MASQUERADE
-
-conntrack -D -d 221.149.135.231 -p tcp --dport 6002 2>/dev/null || true
-```
-
-규칙이 정상적으로 추가되었는지 확인합니다.
-
-```bash
-iptables -t nat -L PREROUTING --line-numbers -n -v
-iptables -t nat -L POSTROUTING --line-numbers -n -v
-```
-
-앱에서 버전 정보로 들어가서 펌웨어 업데이트를 실행합니다.
-
-업데이트가 끝나면 기기 현재 버전이 `1633`으로 보이는지 확인합니다. 앱에서 100% 진행 후 실패로 표시되더라도 기기가 실제로 업데이트되는 경우가 있으므로, 앱의 현재 버전 표시를 확인하세요.
-
-## 5. OTA DNAT 원복
-
-펌웨어 업데이트가 끝나면 반드시 `6002` DNAT를 제거합니다.
-
-공유기 SSH에서 아래 명령을 그대로 실행합니다.
-
-```bash
-iptables -t nat -D PREROUTING ! -s 192.168.0.4 -d 221.149.135.231 -p tcp --dport 6002 -j DNAT --to-destination 192.168.0.4:6002 2>/dev/null || true
-
-iptables -t nat -D POSTROUTING ! -s 192.168.0.4 -d 192.168.0.4 -p tcp --dport 6002 -j MASQUERADE 2>/dev/null || true
-
-conntrack -D -d 221.149.135.231 -p tcp --dport 6002 2>/dev/null || true
-```
-
-규칙이 삭제되었는지 확인합니다.
-
-```bash
-iptables -t nat -L PREROUTING --line-numbers -n -v
-iptables -t nat -L POSTROUTING --line-numbers -n -v
-```
-
-OTA 서버도 종료합니다.
-
-```bash
-pkill -f purethink_ota_server.py 2>/dev/null || true
-```
+UniFi에서 추가한 `dapt.iptime.org` 레코드를 삭제하고 기기·앱의 DNS 캐시와 연결을 갱신하면 원본으로 돌아갑니다. Bridge가 공유기 설정을 자동 변경하지는 않습니다.
 
 ## 6. 브릿지 서버 설치
+
+### Proxmox LXC / Ubuntu 24.04 설치
+
+[`install/purethink-bridge-install.sh`](install/purethink-bridge-install.sh)는 **이미 생성한 Ubuntu LXC 내부에서 root로 실행하는 재실행 가능한 설치 스크립트**입니다. [Community Scripts 설치 문서](https://community-scripts.org/docs/install/readme)의 컨테이너 내부 설치 흐름을 참고한 독립 실행형이며, `FUNCTIONS_FILE_PATH`가 전달되면 공용 초기화·Node.js 설치·정리 함수를 사용하고, 없으면 독립 실행합니다. 이 파일은 컨테이너 내부용 `install/` 스크립트이며, Proxmox 호스트에서 LXC를 생성하는 `ct/` 스크립트나 Community Scripts 공식 등록 항목은 아닙니다.
+
+Node.js 22와 systemd로 실행하며 Docker는 필요하지 않습니다. Ubuntu의 systemd 서비스가 정상 동작하도록 Unprivileged LXC의 Nesting 옵션은 활성화하세요. 앱 서비스 자체에는 추가 mount namespace를 요구하는 `ProtectSystem`/`ProtectHome`을 사용하지 않습니다. 소스, 런타임, 데이터를 각각 `/opt/purethink-bridge`, `/opt/purethink-node`, `/var/lib/purethink-bridge`에 설치합니다. 재실행하면 기존 브릿지 소스·Node.js·환경 파일·설정·인증서를 보존하고 서비스와 OTA 구성만 다시 설치합니다. Git `origin`의 fetch/push 대상은 선택한 `REPO_URL`(기본: `hwajin-me/purethink_bridge`)로 맞춥니다. 자동 pull은 하지 않으며 브릿지 소스 업데이트는 아래 별도 절차를 사용합니다. 동시에 두 설치가 실행되지 않도록 잠금을 사용합니다. `bash purethink-bridge-install.sh --help`로 사용법을 확인할 수 있습니다.
+
+1. Proxmox 웹 UI에서 Ubuntu **24.04** LXC 템플릿을 내려받고 `Create CT`로 컨테이너를 생성합니다.
+2. 시작값으로 Unprivileged 컨테이너(Nesting 활성화), CPU 2코어, RAM 1024MB, 디스크 8GB를 사용합니다. 브릿지는 기기 LAN에 연결된 브릿지(예: `vmbr0`)로 지정합니다.
+3. 컨테이너에 고정 IPv4, 게이트웨이, DNS를 설정하고 시작합니다. GitHub, nodejs.org, npm registry와 Ubuntu 패키지 저장소에 접근할 수 있어야 합니다.
+4. 방화벽을 사용 중이면 기기에서 LXC의 TCP `8885`, 관리 PC에서 TCP `33301`, OTA에 사용하는 기기와 앱에서 TCP `6002` 접근을 허용합니다. 원본 TCP `8885`/`6002`, 내부 MQTT 포트와 지정 공용 DNS 네 곳의 UDP/TCP `53`으로 나가는 연결도 필요합니다. 대시보드에는 인증 기능이 없으므로 신뢰하는 LAN에서만 접근하도록 제한하세요.
+
+이 저장소를 받은 **Proxmox 호스트**에서 스크립트를 복사하고 실행합니다. 아래 `120`은 실제 CT ID로 바꾸세요. 설치 스크립트에는 컨테이너 IP를 입력하지 않습니다.
+
+```bash
+# 저장소 루트에서 실행
+pct push 120 install/purethink-bridge-install.sh /root/purethink-bridge-install.sh
+pct exec 120 -- bash /root/purethink-bridge-install.sh
+```
+
+또는 스크립트 파일을 LXC로 복사한 뒤 LXC 콘솔에서 직접 실행합니다. 설치 스크립트는 IP를 선택하거나 환경 파일에 저장하지 않습니다. DHCP를 사용한다면 공유기에서 주소 예약을 설정하세요.
+
+```bash
+bash /root/purethink-bridge-install.sh
+```
+
+LXC 내부 root 셸에서 포크의 설치 스크립트를 직접 내려받아 실행할 수도 있습니다. 아래 경로를 사용하려면 변경한 설치 스크립트와 앱 소스가 포크의 `main`에 커밋·push되어 있어야 합니다.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hwajin-me/purethink_bridge/main/install/purethink-bridge-install.sh \
+  -o /root/purethink-bridge-install.sh
+bash /root/purethink-bridge-install.sh
+```
+
+기본 설치 소스는 사용자 포크 `https://github.com/hwajin-me/purethink_bridge.git`의 `main`입니다. 포크나 특정 브랜치/태그를 설치하려면 `REPO_URL`, `REPO_REF`를 함께 지정할 수 있습니다.
+
+새 설치의 기본 내부 MQTT는 실행 환경의 로컬 브로커 `127.0.0.1:1883`이며 연결이 활성화됩니다. 다른 서버의 브로커를 사용하면 대시보드에서 Host를 지정하세요. 인증이 필요하면 `http://<LXC IP>:33301`에서 ID/PW를 입력하세요. 재설치 시 기존 MQTT 설정·인증정보는 보존하며, MQTT 브로커 자체를 LXC에 설치하지는 않습니다. DIV01 펌웨어 패치와 OTA 서버는 자동으로 준비됩니다. UniFi DNS 전환, 기기의 실제 펌웨어 업데이트, Home Assistant 설정은 이 문서의 해당 절차를 따릅니다. 이후 예제의 Ubuntu 서버 IP에는 LXC IP를 사용합니다.
+
+#### 자동 설치되는 DIV01 OTA
+
+- 브릿지: `purethink-bridge.service`, 대시보드 `33301`, MQTT/TLS `8885`, 원본 HTTP 프록시 `6002`
+- OTA: `purethink-ota.service`, loopback HTTP `6003`, 재부팅 시 자동 시작
+- OTA 코드: `/opt/purethink-ota/server.py`
+- 별도 패치 스크립트: `/opt/purethink-ota/patch-div01.py`
+- 관리 명령: `/usr/local/sbin/purethink-manage`
+- 원본·패치 펌웨어: `/var/lib/purethink-ota/firmware/`
+
+최초 설치 시 제조사 `ver.220706.1630_DIV01.bin`을 다운로드하여 `1633`으로 패치합니다. 크기(509952 bytes), 원본 SHA-256(`454d85f3b4e56b51ac7776df154a37bf684b5bf81f3a81a19721de3e70b66d97`), 패치 결과 SHA-256(`9c20bd2d5b113ea38b2fcac483ec7b5a08ff9bf0f494338a1f6ea1134769f343`)을 모두 확인합니다. 다른 파일이면 배포하지 않습니다. 재실행 시에는 저장된 원본을 검증하여 재사용합니다.
+
+제조사 다운로드가 불가능하면 동일한 원본을 제공하는 URL 또는 LXC 내부 파일 URL을 지정할 수 있습니다. 해시 검사는 그대로 적용됩니다.
+
+```bash
+DIV01_FIRMWARE_URL=file:///root/ver.220706.1630_DIV01.bin bash /root/purethink-bridge-install.sh
+```
+
+설치 완료 후 수동 펌웨어 패치 단계는 생략할 수 있습니다. 위 DNS 설정과 `LOCAL_OTA_ENABLED` 절차에 따라 **DIV01만** 업데이트하세요. 진단용 OTA 백엔드는 다른 모델·파일에 404를 반환하고, Bridge는 검증된 DIV01 두 파일을 로컬에서 제공하며 나머지 요청은 원본으로 전달합니다. 기기에 자동 플래시하지 않습니다.
+
+```bash
+curl -fsS http://127.0.0.1:6003/version/combined
+curl -I http://127.0.0.1:6003/firmware/ver.220706.1633_DIV01.bin
+journalctl -u purethink-ota -n 50 --no-pager
+# OTA 작업 후 서버도 중지하려면:
+systemctl disable --now purethink-ota
+```
+
+설치 후 관리 스크립트로 각 작업을 별도로 실행할 수 있습니다.
+
+```bash
+purethink-manage status
+purethink-manage restart
+purethink-manage ota-stop
+purethink-manage ota-start
+purethink-manage logs
+purethink-manage firmware-patch /root/ver.220706.1630_DIV01.bin /root/ver.220706.1633_DIV01.bin
+```
+
+`firmware-patch`는 지정한 파일을 검증·패치하여 출력할 뿐, 기기에 전송하거나 플래시하지 않습니다.
+
+설치 스크립트를 재실행하면 OTA 서비스도 다시 활성화됩니다. 앱 소스와 LXC IP는 설치 스크립트가 수정하지 않습니다.
+
+LXC 내부 관리 명령:
+
+```bash
+systemctl status purethink-bridge
+journalctl -u purethink-bridge -n 50 --no-pager
+systemctl restart purethink-bridge
+curl -fsS http://127.0.0.1:33301/api/status
+```
+
+실행 환경은 `/etc/purethink-bridge.env`에서 변경하고 서비스를 재시작합니다. IP 변경 시 UniFi의 DNS A 레코드를 갱신해야 합니다. 설정·인증서는 `/var/lib/purethink-bridge`에 보관되므로 이 경로와 환경 파일을 백업하세요. 다운로드·npm 설치 단계는 임시 디렉터리에서 진행하고 실패 시 정리하므로 재실행할 수 있습니다. 서비스 활성화 이후 실패하면 설정과 인증서를 보존하고 아래 복구 절차를 따릅니다. 설치 완료 표시는 API 응답과 TLS 연결 확인 후에만 기록됩니다.
+
+#### 설치 실패 복구
+
+`journalctl -u purethink-bridge -n 100 --no-pager`와 설치 오류를 확인하세요. 오류를 해결한 뒤 같은 설치 스크립트를 다시 실행할 수 있습니다. 이미 설치된 소스·환경 파일·설정·인증서는 유지합니다. `226/NAMESPACE`가 발생하면 기존 서비스의 `ProtectSystem`/`ProtectHome` 설정을 제거하고 `systemctl daemon-reload`를 실행하세요. Ubuntu 기본 서비스도 실패한다면 Proxmox의 Nesting 옵션을 확인합니다.
+
+기존 설치가 불완전해 새로 설치해야 한다면 Proxmox 백업을 만든 뒤 새 LXC에 설치하고 `/var/lib/purethink-bridge`와 `/etc/purethink-bridge.env`를 복원합니다. 복원 중에는 서비스를 중지하고 데이터 소유자를 `purethink-bridge:purethink-bridge`, 디렉터리 권한을 `0700`으로 맞추세요. 기존 데이터 경로를 자동 삭제하지 않습니다.
+
+대시보드는 `http://<LXC IPv4>:33301`로 접속하세요. 표시 주소를 지정하려면 `DEVICE_MQTT_DISPLAY_HOST`를 설정할 수 있으며 실제 리스닝 주소와는 별개입니다.
+
+#### LXC 설치의 업데이트
+
+기존 원본 저장소 설치도 아래 절차에서 `origin`을 사용자 포크로 전환합니다. 로컬 변경이나 분기된 이력 때문에 fast-forward가 불가능하면 중단되며 강제로 덮어쓰지 않습니다.
+
+업데이트 전에 Proxmox에서 컨테이너 백업 또는 스냅샷을 만드세요. LXC 내부 root 셸에서 실행합니다. 설치 스크립트를 재실행해도 기존 브릿지 소스는 자동 업데이트하지 않습니다.
+
+```bash
+bash <<'UPDATE'
+set -Eeuo pipefail
+systemctl stop purethink-bridge purethink-ota
+cd /opt/purethink-bridge
+# 이전 설치에서 npm이 생성한 미추적 lockfile은 새 tracked lockfile과 충돌합니다.
+if [[ -f package-lock.json ]] && ! git ls-files --error-unmatch package-lock.json >/dev/null 2>&1; then
+  mv package-lock.json "/root/purethink-package-lock.$(date +%s).json"
+fi
+git remote set-url origin https://github.com/hwajin-me/purethink_bridge.git
+git pull --ff-only
+export PATH=/opt/purethink-node/bin:$PATH
+# 저장소에 lockfile이 없으면 이전 설치에서 생성된 파일도 갱신합니다.
+if git ls-files --error-unmatch package-lock.json >/dev/null 2>&1; then
+  action=ci
+else
+  action=install
+fi
+chown -R purethink-bridge:purethink-bridge /opt/purethink-bridge
+trap 'chown -R root:root /opt/purethink-bridge' EXIT
+runuser -u purethink-bridge -- env PATH="$PATH" HOME=/var/lib/purethink-bridge npm "$action" --omit=dev --no-audit --no-fund
+chown -R root:root /opt/purethink-bridge
+printf 'commit=%s\nnode=%s\n' "$(git rev-parse HEAD)" "$(node --version)" > INSTALL_VERSION
+bash install/purethink-bridge-install.sh
+UPDATE
+
+journalctl -u purethink-bridge -n 50 --no-pager
+curl -fsS http://127.0.0.1:33301/api/status
+```
+
+실패하면 서비스를 중지한 상태에서 원인을 해결하거나 컨테이너 백업으로 복구하세요. 태그로 설치해 detached HEAD 상태라면 `git pull` 대신 업데이트할 태그를 명시적으로 fetch/checkout해야 합니다. 위 절차는 앱과 서비스 구성을 갱신하여 기존 6002 OTA를 loopback 6003으로 이전합니다. Node.js는 변경하지 않습니다. 독립 설치의 Node.js는 `/opt/purethink-node`에 있으므로 OS 패키지 업데이트로 갱신되지 않습니다. Community Scripts 모드는 `setup_nodejs`로 설치한 시스템 런타임에 연결됩니다. 런타임 업데이트는 별도로 관리하세요.
+
+#### 설치 스크립트 검증
+
+DNS failover·TTL·순환 방지, HTTP/TCP 프록시, 실제 MQTT 브로커를 이용한 자동 연결·재연결·다중 기기 구독 테스트는 `npm ci && npm test`로 실행합니다. 패치 OTA 라우트는 `python3 tests/ota-unit.py`로 검증합니다.
+
+전체 설치는 다음 명령으로 폐기 가능한 Ubuntu 컨테이너에서 검증할 수 있습니다.
+
+```bash
+docker run --rm -v "$PWD:/source:ro" ubuntu:24.04 bash /source/tests/install-smoke.sh
+```
+
+실제 브릿지 설치 및 API/TLS, DIV01 원본과 패치 결과 해시, OTA의 GET/POST/PUT/HEAD 응답, 다른 모델·잘못된 경로의 거부, 반복 설치 시 설정·인증서 보존, 잘못된 펌웨어 거부를 확인합니다. 테스트에서는 LXC 판별, systemd 실행 및 Community Scripts 공용 함수를 대체하므로, 실제 Proxmox의 부팅·AppArmor·네트워크 및 공용 함수 전체 동작은 별도의 LXC 검증이 필요합니다.
+
+### Ubuntu Docker 설치
 
 Ubuntu 서버에서 저장소를 받습니다.
 
@@ -389,7 +410,7 @@ Ubuntu 서버에서 저장소를 받습니다.
 sudo mkdir -p /opt/purethink-bridge
 sudo chown -R $USER:$USER /opt/purethink-bridge
 
-git clone https://github.com/af950833/purethink_bridge.git /opt/purethink-bridge
+git clone https://github.com/hwajin-me/purethink_bridge.git /opt/purethink-bridge
 cd /opt/purethink-bridge
 ```
 
@@ -397,6 +418,7 @@ cd /opt/purethink-bridge
 
 ```bash
 cd /opt/purethink-bridge
+git remote set-url origin https://github.com/hwajin-me/purethink_bridge.git
 git pull --ff-only
 ```
 
@@ -425,7 +447,7 @@ docker run -d \
 
 `--network host`를 사용하면 컨테이너가 우분투 서버의 네트워크를 그대로 사용합니다.
 따라서 `-p 8885:8885`, `-p 33301:33301` 포트 매핑은 넣지 않습니다.
-우분투 서버에서 `8885`, `33301` 포트를 이미 다른 서비스가 사용 중이면 컨테이너 실행이 실패할 수 있습니다.
+우분투 서버에서 `8885`, `6002`, `33301` 포트를 이미 다른 서비스가 사용 중이면 컨테이너 실행이 실패할 수 있습니다.
 
 상태 확인:
 
@@ -453,7 +475,7 @@ http://192.168.0.4:33301
 만약 Docker Hub 또는 GHCR에 이미지를 배포했다면 아래처럼 pull/run 방식으로 사용할 수 있습니다.
 
 ```bash
-docker pull ghcr.io/af950833/purethink_bridge:latest
+docker pull ghcr.io/hwajin-me/purethink_bridge:latest
 
 docker rm -f purethink_bridge 2>/dev/null || true
 
@@ -464,7 +486,7 @@ docker run -d \
   -e TZ=Asia/Seoul \
   -e DEVICE_MQTT_DISPLAY_HOST=192.168.0.4 \
   -v /opt/purethink-bridge/data:/data \
-  ghcr.io/af950833/purethink_bridge:latest
+  ghcr.io/hwajin-me/purethink_bridge:latest
 ```
 
 ## 8. 내부 MQTT 설정
@@ -489,143 +511,31 @@ Internal MQTT: connected
 Device: offline
 ```
 
-아직 기기 DNAT를 걸기 전이면 `Device: offline`이 정상입니다.
+아직 내부 DNS 전환 전이면 `Device: offline`이 정상입니다.
 
-## 9. MQTT용 공유기 DNAT
+## 9. 원본 DNS와 추가 서비스
 
-펌웨어 `1633` 업데이트가 끝난 기기는 로컬 브릿지의 자체 인증서를 받아들일 수 있습니다.
+원본 MQTT/HTTP와 추가 TCP 프록시는 모두 같은 전용 resolver를 사용합니다. 공용 DNS를 순서대로 시도하고 TTL(최대 300초) 동안 캐시합니다. 동시 조회는 하나로 합치고 IP가 여러 개면 새 연결마다 순환합니다. 조회 실패 시 OS DNS 또는 만료된 IP를 사용하지 않으며 다음 연결 시 재시도합니다. MQTT는 5초마다 자동 재연결하고 연결된 모든 기기 토픽을 다시 구독합니다.
 
-이제 기기의 제조사 MQTT 접속을 브릿지 서버로 DNAT합니다.
-
-### 대시보드에서 설정
-
-대시보드의 `ASUS Router DNAT Settings`에 아래 값을 입력합니다.
+기본 대체 포트는 `8885`(MQTT/TLS)와 `6002`(HTTP)입니다. 원본에서 추가로 사용하는 TCP 서비스가 있다면 환경 변수로 같은 포트의 전달을 켭니다. 예를 들어 HTTP/HTTPS도 사용한다면:
 
 ```text
-Router IP: 공유기 IP
-SSH Port: 22
-Username: 공유기 SSH ID
-Password: 공유기 SSH PW
-Purethink IP: 퓨어싱크 기기 IP
+ORIGIN_TCP_PORTS=80,443
 ```
 
-예:
+HTTPS는 TLS를 종료하지 않고 원본 인증서와 바이트를 그대로 전달합니다. 해당 포트의 인바운드·아웃바운드를 허용하고 기존 서비스와 충돌하지 않게 하세요. LXC 서비스는 낮은 포트 바인딩 권한을 포함합니다. Docker bridge 네트워크에서는 `6002`, `8885`, `33301` 및 추가 포트를 각각 게시해야 합니다. UDP나 목록에 없는 포트는 전달하지 않습니다. DNS 변경 자체가 모든 포트를 프록시하는 것은 아닙니다.
 
-```text
-Router IP: 192.168.0.1
-SSH Port: 22
-Purethink IP: 192.168.0.67
-```
+이 구성은 원본 서비스의 LAN 진입점을 대체합니다. 제조사 HTTP API를 로컬에서 재구현한 것은 아니므로 원본 장애 시 HTTP·제조사 앱 기능은 실패할 수 있습니다. 기기–내부 MQTT–Home Assistant의 로컬 제어는 원본과 독립적으로 유지됩니다. MQTT의 제조사 토픽은 `/things/` 범위를 지원하며 기존 펌웨어의 인증서 검증 패치는 여전히 필요합니다.
 
-버튼은 아래 순서로 사용합니다.
+## 10. 기존 설정 이전과 자동 MQTT 연결
 
-```text
-Save
-Check DNAT
-Apply DNAT
-Check DNAT
-```
+새 설치와 Docker/직접 실행 모두 `127.0.0.1:1883` 자동 연결이 기본입니다. Docker/직접 실행에서 다른 기본 서버를 쓰려면 첫 실행 전에 `INTERNAL_MQTT_HOST`를 설정하세요. LXC 설치 후에는 대시보드에서 서버를 변경하세요. `INTERNAL_MQTT_ENABLED=false`로 첫 실행 자동 연결을 끌 수 있습니다. 이미 저장한 host/port/ID/PW 및 비활성화 선택은 보존합니다. 잘못된 포트·토픽·타입은 저장 전에 거부하고, 설정은 권한 0600의 임시 파일을 원자적으로 교체해 보관합니다. 빈 비밀번호 입력은 기존 값을 유지하며 `Clear saved password`로 명시적으로 삭제할 수 있습니다. 예전 버전의 host가 비어 있는 초기 설정만 자동 연결 기본값으로 이전합니다. 별도 MQTT 브로커를 자동 설치하지는 않습니다. `127.0.0.1`은 Bridge가 실행되는 호스트 또는 컨테이너 자신을 가리킵니다. Docker bridge 네트워크에서 별도 브로커를 사용하면 해당 브로커의 서비스명이나 접근 가능한 IP를 지정하세요.
 
-`Check DNAT` 결과가 `active`이면 정상입니다.
-
-대시보드는 아래 방식으로 공유기에 별도 NAT 체인을 생성합니다.
-
-```text
-PREROUTING -> PURETHINK_DNAT -> 브릿지 서버 8885
-```
-
-### 수동 설정
-
-대시보드를 사용하지 않고 공유기 SSH에서 직접 설정하려면 아래 명령을 실행합니다.
-
-아래 예시는:
-
-```text
-Purethink IP: 192.168.0.67
-Bridge IP: 192.168.0.4
-MQTT Port: 8885
-```
-
-기준입니다.
-
-```bash
-iptables -t nat -N PURETHINK_DNAT 2>/dev/null || true
-
-iptables -t nat -S PREROUTING | grep -F -- '-j PURETHINK_DNAT' >/dev/null || iptables -t nat -I PREROUTING 1 -j PURETHINK_DNAT
-
-iptables -t nat -S PURETHINK_DNAT | grep -F -- '-s 192.168.0.67/32 -p tcp -m tcp --dport 8885 -j DNAT --to-destination 192.168.0.4:8885' >/dev/null || iptables -t nat -A PURETHINK_DNAT -s 192.168.0.67/32 -p tcp -m tcp --dport 8885 -j DNAT --to-destination 192.168.0.4:8885
-
-conntrack -D -s 192.168.0.67 -p tcp --dport 8885 2>/dev/null || true
-```
-
-POSTROUTING은 별도로 추가하지 않습니다.
-
-규칙이 정상적으로 추가되었는지 확인합니다.
-
-```bash
-iptables -t nat -S PREROUTING | grep PURETHINK_DNAT
-iptables -t nat -S PURETHINK_DNAT
-```
-
-대시보드에서 확인합니다.
-
-```text
-Device: connected
-Manufacturer MQTT: connected
-Internal MQTT: connected
-```
-
-payload stream에 `/things/<device-id>/shadow` 메시지가 표시되면 정상입니다.
-
-## 10. MQTT DNAT 원복
-
-브릿지 테스트를 중단하거나 제조사 서버 직접 연결로 되돌리고 싶으면 `8885` DNAT를 제거합니다.
-
-### 대시보드에서 원복
-
-대시보드의 `ASUS Router DNAT Settings`에서 아래 순서로 실행합니다.
-
-```text
-Remove DNAT
-Check DNAT
-```
-
-`Check DNAT` 결과가 `inactive`이면 정상입니다.
-
-### 수동 원복
-
-공유기 SSH에서 직접 원복하려면 아래 명령을 실행합니다.
-
-```bash
-while iptables -t nat -D PURETHINK_DNAT -s 192.168.0.67/32 -p tcp -m tcp --dport 8885 -j DNAT --to-destination 192.168.0.4:8885 2>/dev/null; do :; done
-
-while iptables -t nat -D PREROUTING -j PURETHINK_DNAT 2>/dev/null; do :; done
-
-iptables -t nat -F PURETHINK_DNAT 2>/dev/null || true
-
-iptables -t nat -X PURETHINK_DNAT 2>/dev/null || true
-
-iptables -t nat -D PREROUTING -s 192.168.0.67/32 -p tcp -m tcp --dport 8885 -j DNAT --to-destination 192.168.0.4:8885 2>/dev/null || true
-
-conntrack -D -s 192.168.0.67 -p tcp --dport 8885 2>/dev/null || true
-```
-
-규칙이 삭제되었는지 확인합니다.
-
-```bash
-iptables -t nat -S PREROUTING | grep PURETHINK_DNAT || echo 'PREROUTING jump 없음'
-iptables -t nat -S PURETHINK_DNAT 2>/dev/null || echo 'PURETHINK_DNAT 체인 없음'
-```
-
-기기가 제조사 서버로 다시 붙었는지 확인합니다.
-
-```bash
-conntrack -L 2>/dev/null | grep '192.168.0.67.*8885'
-```
+ASUS 공유기 SSH/DNAT UI·API·의존성은 제거되었습니다. 남아 있는 `routerDnat` 설정과 공유기 비밀번호는 앱 시작 시 설정 파일에서 제거합니다. 장비의 기존 네트워크 규칙은 앱이 변경하지 않습니다. 이전 서버에서 6002를 OTA가 점유하고 있다면 **소스 업데이트 후 설치 스크립트를 다시 실행**하여 6003으로 이전한 뒤 DNS를 전환하세요.
 
 ## 11. Home Assistant 설정
 
-Home Assistant custom component `af950833/purethink`는 내부 MQTT 서버를 선택하도록 수정된 버전을 사용합니다.
+Home Assistant 연동은 Bridge와 별도 프로젝트인 custom component `af950833/purethink`에서 내부 MQTT 서버를 선택하도록 수정된 버전을 사용합니다. 이 참조는 Bridge의 설치·업데이트 저장소가 아닙니다.
 
 새 통합 추가 시:
 
@@ -663,7 +573,7 @@ curl -s http://127.0.0.1:33301/api/status
 내부 MQTT 확인:
 
 ```bash
-mosquitto_sub -h 127.0.0.1 -p 1883 \
+mosquitto_sub -h '<MQTT_HOST>' -p 1883 \
   -u '<MQTT_ID>' -P '<MQTT_PW>' \
   -t '/things/#' -v
 ```
@@ -671,22 +581,25 @@ mosquitto_sub -h 127.0.0.1 -p 1883 \
 브릿지 포트 확인:
 
 ```bash
-ss -ltnp | grep -E ':8885|:33301'
+ss -ltnp | grep -E ':8885|:6002|:33301'
 ```
 
-공유기 DNAT 확인:
+DNS 전환 확인:
 
 ```bash
-iptables -t nat -S PREROUTING | grep PURETHINK_DNAT
-iptables -t nat -S PURETHINK_DNAT
+nslookup dapt.iptime.org <UniFi-DNS-IP>
+curl -I http://dapt.iptime.org:6002/firmware/ver.220706.1630_DIV01.bin
 ```
 
 ## 13. 업데이트 방법
+
+아래는 Docker 설치용입니다. LXC 설치는 위의 [LXC 설치의 업데이트](#lxc-설치의-업데이트)를 따르세요.
 
 소스 업데이트:
 
 ```bash
 cd /opt/purethink-bridge
+git remote set-url origin https://github.com/hwajin-me/purethink_bridge.git
 git pull --ff-only
 docker build -t purethink_bridge:latest .
 docker rm -f purethink_bridge
@@ -704,8 +617,8 @@ docker run -d \
 
 ### Device가 offline
 
-- 대시보드 `ASUS Router DNAT Settings`에서 `Check DNAT`가 `active`인지 확인
-- 공유기 `PURETHINK_DNAT` 체인에 기기 IP의 `8885` DNAT가 있는지 확인
+- 기기에서 사용하는 DNS의 dapt.iptime.org 응답이 Bridge IP인지 확인
+- 기기와 Bridge 사이 TCP 8885 방화벽 및 DNS 캐시 확인
 - 기기 IP가 맞는지 확인
 - 기기가 펌웨어 `1633`인지 확인
 - 브릿지 컨테이너가 `8885`를 listen 중인지 확인
@@ -739,3 +652,10 @@ ss -ltnp | grep 8885
 ```
 
 컨테이너 재시작 직후 기기가 아직 붙지 않은 상태에서는 제조사 MQTT 구독이 제한적으로 동작합니다. 기기가 연결되면 해당 기기 토픽으로 좁혀집니다.
+
+
+### 회귀 검증 범위
+
+`npm test`는 DNS, HTTP/TCP 프록시, 펌웨어 검증·패치·오프라인 다운로드·Range, 동일 MQTT 메시지의 에코 억제, 원본 연결 중단 중 기기 이탈, 로컬 MQTT 재연결, 잘못된 설정의 거부를 확인합니다. `tests/install-smoke.sh`는 실제 DIV01 원본 및 결과 해시, 구버전 설치 보호, 서비스·설정 보존을 확인합니다. 합성 펌웨어를 쓰는 단위 테스트와 실제 원본 SHA-256 검증은 별개로 수행합니다.
+
+MQTT 3에서는 수신 메시지에 발행자 ID가 없으므로 에코는 토픽·본문·개수·5초 만료 시간으로 추적합니다. 다른 클라이언트가 같은 토픽·본문을 그 시간에 발행하는 경우까지 완벽히 구별할 수는 없습니다. 원본 HTTP API·다른 모델의 OTA를 로컬에서 재구현한 것은 아닙니다.

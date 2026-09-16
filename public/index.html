@@ -99,53 +99,30 @@
               <span>Subscribe Topic</span>
               <input id="topic" name="topic" value="/things/#">
             </label>
+            <label class="checkbox-field">
+              <span>Clear saved password</span>
+              <input id="clearPassword" type="checkbox">
+            </label>
             <button type="submit">Save</button>
           </form>
+          <p id="configMessage" role="status"></p>
         </section>
 
         <section class="settings">
-          <h2>ASUS Router DNAT Settings</h2>
-          <form id="dnatForm" class="dnat-form">
-            <label>
-              <span>Router IP</span>
-              <input id="routerHost" name="routerHost" placeholder="192.168.0.1">
-            </label>
-            <label>
-              <span>SSH Port</span>
-              <input id="routerPort" name="routerPort" type="number" min="1" max="65535" value="22">
-            </label>
-            <label>
-              <span>Username</span>
-              <input id="routerUsername" name="routerUsername" autocomplete="username">
-            </label>
-            <label>
-              <span>Password</span>
-              <input id="routerPassword" name="routerPassword" type="password" autocomplete="current-password" placeholder="unchanged">
-            </label>
-            <label>
-              <span>Purethink IP</span>
-              <input id="dnatDeviceIp" name="dnatDeviceIp" placeholder="192.168.0.67">
-            </label>
-            <input id="dnatManufacturerIp" name="dnatManufacturerIp" type="hidden" value="221.149.135.231">
-            <input id="dnatBridgeIp" name="dnatBridgeIp" type="hidden" value="192.168.0.4">
-            <input id="dnatMqttPort" name="dnatMqttPort" type="hidden" value="8885">
-            <div class="button-row">
-              <button type="submit">Save</button>
-              <button id="checkDnat" type="button">Check DNAT</button>
-              <button id="applyDnat" type="button">Apply DNAT</button>
-              <button id="removeDnat" class="danger" type="button">Remove DNAT</button>
-            </div>
-          </form>
-          <div class="dnat-status-grid">
-            <dl class="dnat-status">
-              <dt>Status</dt><dd id="dnatStatus">-</dd>
-              <dt>Last Checked</dt><dd id="dnatChecked">-</dd>
-            </dl>
-            <dl class="dnat-status">
-              <dt>Last Action</dt><dd id="dnatAction">-</dd>
-              <dt>Last Error</dt><dd id="dnatError">-</dd>
-            </dl>
-          </div>
+          <h2>UniFi DNS / Origin</h2>
+          <p>내부 DNS에서 dapt.iptime.org를 Bridge의 LAN IP로 지정하세요.</p>
+          <dl class="origin-status">
+            <dt>Origin IP</dt><dd id="originAddresses">-</dd>
+            <dt>Public DNS</dt><dd id="originDns">-</dd>
+            <dt>Ports</dt><dd id="originPorts">-</dd>
+            <dt>OTA</dt><dd id="originOta">-</dd>
+            <dt>Firmware</dt><dd id="firmwareStatus">-</dd>
+            <dt>Available</dt><dd id="firmwareAvailable">-</dd>
+            <dt>Firmware Error</dt><dd id="firmwareError">-</dd>
+            <dt>Last Error</dt><dd id="originError">-</dd>
+          </dl>
+          <button id="prepareFirmware" type="button">Prepare / Retry DIV01 Firmware</button>
+          <p>원본 조회: 1.1.1.1 → 1.0.0.1 → 8.8.8.8 → 8.8.4.4. 내부 MQTT는 시작 시 자동 연결하고 끊기면 재연결합니다.</p>
         </section>
       </section>
 
