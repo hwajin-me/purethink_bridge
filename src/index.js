@@ -17,6 +17,8 @@ import selfsigned from 'selfsigned';
 import { createOriginLookup, DNS_SERVERS } from './origin.js';
 import { createOriginProxy, createTcpProxy, originTcpPorts } from './origin-proxy.js';
 import { createFirmwareStore } from './firmware.js';
+import { validateRootCa } from './root-ca.js';
+import { buildFirmware, validateBuildOptions } from './firmware-build.js';
 import { createMirrorTracker } from './mirror-tracker.js';
 import { mergeInternalMqtt, validateInternalMqtt, writeConfig } from './config.js';
 
@@ -87,7 +89,7 @@ const state = {
   startedAt: displayTime(),
   device: {
     status: 'offline',
-    clientId: null,
+    id: null,
     lastSeen: null,
     lastTopic: null,
     rx: 0,
@@ -150,7 +152,7 @@ function loadConfig() {
   };
   // Old releases saved a disabled, empty placeholder. Preserve explicit broker choices.
   if (loaded.version !== 1 && !loaded.internalMqtt?.host) migrated.internalMqtt = { ...migrated.internalMqtt, host: DEFAULT_CONFIG.internalMqtt.host, enabled: DEFAULT_CONFIG.internalMqtt.enabled };
-  if (loaded.routerDnat || loaded.version !== 1) saveConfig(migrated);
+  if (loaded.routerDnat || loaded.version !== 1 || loaded.devices?.some((device) => Object.hasOwn(device, 'clientId'))) saveConfig(migrated);
   return migrated;
 }
 
@@ -183,18 +185,18 @@ function topicMatchesThings(topic) {
   return topic.startsWith('/things/');
 }
 
-function topicForClient(clientId) {
-  return `/things/${clientId}/#`;
+function topicForDevice(deviceId) {
+  return `/things/${deviceId}/#`;
 }
 
-function subscribeManufacturerForClient(clientId) {
-  if (!clientId || !manufacturerClient?.connected) return;
-  const topic = topicForClient(clientId);
+function subscribeManufacturerForDevice(deviceId) {
+  if (!deviceId || !manufacturerClient?.connected) return;
+  const topic = topicForDevice(deviceId);
   if (manufacturerSubscriptions.has(topic)) return;
   const client = manufacturerClient;
   client.subscribe(topic, { qos: 0 }, (err, granted) => {
     if (client !== manufacturerClient) return;
-    if (!devices.subscriptions().has(clientId)) {
+    if (!devices.subscriptions().has(deviceId)) {
       client.unsubscribe(topic);
       return;
     }
@@ -305,13 +307,14 @@ function connectManufacturer() {
     state.manufacturer.lastConnected = displayTime();
     state.manufacturer.lastError = null;
     manufacturerSubscriptions.clear();
-    for (const clientId of devices.subscriptions()) subscribeManufacturerForClient(clientId);
+    for (const deviceId of devices.subscriptions()) subscribeManufacturerForDevice(deviceId);
   });
 
-  client.on('message', (topic, payload) => {
+  client.on('message', (topic, payload, packet) => {
     if (manufacturerClient !== client) return;
     if (!topicMatchesThings(topic)) return;
     if (wasMirroredTo('manufacturer', topic, payload)) return;
+    if (devices.manufacturerMessage(topic, { retain: Boolean(packet?.retain) })) refreshDevices();
     state.manufacturer.rx += 1;
     recordMessage('from-manufacturer', topic, payload);
     publishToDevice(topic, payload);
@@ -419,10 +422,10 @@ const aedes = new Aedes();
 
 function refreshDevices() {
   state.devices = devices.list();
-  state.mqttClients = devices.clientIds();
   const connected = state.devices.filter((device) => device.status === 'connected');
   state.device.status = connected.length ? 'connected' : 'offline';
-  state.device.clientId = connected.at(-1)?.clientId || null;
+  state.device.localConnected = connected.some((device) => device.localConnected);
+  state.device.id = connected.at(-1)?.id || null;
   const wanted = devices.subscriptions();
   for (const topic of manufacturerSubscriptions) {
     if (!wanted.has(topic.slice('/things/'.length, -2))) {
@@ -430,13 +433,22 @@ function refreshDevices() {
       if (manufacturerClient?.connected) manufacturerClient.unsubscribe(topic);
     }
   }
-  for (const id of wanted) subscribeManufacturerForClient(id);
+  for (const id of wanted) subscribeManufacturerForDevice(id);
 }
 devices.configure(config.devices);
 refreshDevices();
 
 aedes.on('client', (client) => {
   devices.connect(client);
+  refreshDevices();
+});
+
+aedes.on('subscribe', (subscriptions, client) => {
+  devices.subscribe(client, subscriptions.map((item) => item.topic));
+  refreshDevices();
+});
+aedes.on('unsubscribe', (topics, client) => {
+  devices.unsubscribe(client, topics);
   refreshDevices();
 });
 
@@ -448,16 +460,14 @@ aedes.on('clientDisconnect', (client) => {
 aedes.on('publish', (packet, client) => {
   if (!client) return;
   if (!topicMatchesThings(packet.topic)) return;
-  const device = devices.forClient(client);
+  const device = devices.localMessage(client, packet.topic, { retain: Boolean(packet.retain) });
   if (device) {
-    device.lastSeen = displayTime();
-    device.lastTopic = packet.topic;
-    device.rx += 1;
     state.device.status = 'connected';
-    state.device.clientId = client.id;
+    state.device.id = device.id;
     state.device.lastSeen = displayTime();
     state.device.lastTopic = packet.topic;
     state.device.rx += 1;
+    refreshDevices();
   }
   state.bridge.rx += 1;
   recordMessage(device ? 'from-device' : 'from-client', packet.topic, packet.payload);
@@ -505,6 +515,7 @@ if (tlsConfig.dashboardPort) {
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 app.get('/api/status', (_req, res) => {
+  refreshDevices();
   res.json({
     state,
     config: {
@@ -576,6 +587,22 @@ if (process.env.FIRMWARE_AUTO_PREPARE !== 'false') {
 app.post('/api/firmware/prepare', async (_req, res) => {
   try { await firmware.prepare(); res.json({ ok: true, firmware: firmware.state }); }
   catch (error) { res.status(502).json({ ok: false, error: error.message, firmware: firmware.state }); }
+});
+app.post('/api/firmware/validate-root-ca', (req, res) => {
+  try {
+    const { info } = validateRootCa(req.body?.rootCaPem, req.body?.expectedRootCaFingerprint);
+    res.set('Cache-Control', 'no-store').json({ ok: true, rootCa: info });
+  } catch (error) { res.status(400).json({ ok: false, error: error.message }); }
+});
+app.post('/api/firmware/build', (req, res) => {
+  try { validateBuildOptions(req.body); }
+  catch (error) { return res.status(400).json({ ok: false, error: error.message }); }
+  if (!firmware.state.available.includes('ver.220706.1630_DIV01')) {
+    return res.status(409).json({ ok: false, error: 'Prepare / Retry DIV01 Firmware first' });
+  }
+  try {
+    res.set('Cache-Control', 'no-store').json({ ok: true, ...buildFirmware(firmware.getOriginal(), req.body) });
+  } catch (error) { res.status(422).json({ ok: false, error: error.message }); }
 });
 const proxyError = (error) => { state.bridge.origin.lastError = error.message; };
 if (!serviceServers[ORIGIN_HTTP_PORT]) {

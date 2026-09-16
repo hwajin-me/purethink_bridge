@@ -87,3 +87,59 @@ test('corrupt firmware is not advertised or served', async () => {
     await assert.rejects(store.prepare(), /SHA256/); assert.deepEqual(store.state.available, []);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
+
+test('custom build changes only version strings and checksum, with reproducible output', async () => {
+  const { buildFirmware, validateBuildOptions } = await import('../src/firmware-build.js');
+  const options = { version: 'ver.220706.1640_DIV01', tlsMode: 'bypass' };
+  const result = buildFirmware(original, options);
+  const bytes = Buffer.from(result.firmwareBase64, 'base64');
+  assert.equal(bytes.length, SIZE);
+  assert.equal(bytes.indexOf(PATCHED), -1);
+  assert.equal(bytes.toString('ascii').split(options.version).length - 1, 2);
+  let sum = 0xef;
+  for (const byte of bytes.subarray(start, start + size)) sum ^= byte;
+  assert.equal(bytes[result.manifest.checksumOffset], sum);
+  assert.equal(result.manifest.sha256, hash(bytes));
+  assert.equal(result.manifest.caEmbedded, false);
+  assert.deepEqual(buildFirmware(original, options), result);
+  assert.throws(() => buildFirmware(Buffer.alloc(SIZE), options), /SHA256/);
+  for (const version of ['../../bad', ORIGINAL, PATCHED, 'ver.220706.1640_DIV02']) {
+    assert.throws(() => validateBuildOptions({ ...options, version }), /Version/);
+  }
+  assert.throws(() => validateBuildOptions({ ...options, tlsMode: 'ca' }), /unavailable/);
+  assert.throws(() => validateBuildOptions({ ...options, rootCaPem: 'private key' }), /public PEM/);
+});
+
+test('custom build includes validated public Root CA as companion only', async () => {
+  const { buildFirmware } = await import('../src/firmware-build.js');
+  const { default: selfsigned } = await import('selfsigned');
+  const ca = selfsigned.generate([{ name: 'commonName', value: 'Build Test CA' }], {
+    days: 1, keySize: 2048, extensions: [{ name: 'basicConstraints', cA: true }]
+  });
+  const options = { version: 'ver.220706.1634_DIV01', tlsMode: 'bypass' };
+  const result = buildFirmware(original, { ...options, rootCaPem: ca.cert });
+  assert.match(result.rootCaPem, /BEGIN CERTIFICATE/);
+  assert.equal(result.manifest.caEmbedded, false);
+  assert.equal(result.firmwareBase64, buildFirmware(original, options).firmwareBase64);
+  assert.throws(() => buildFirmware(original, { ...options, rootCaPem: ca.cert + ca.private }), /public PEM/);
+});
+
+test('hostname slots preserve URL suffixes, terminators and surrounding bytes', async () => {
+  const { HOST_SLOTS, patchHostname, validateBuildOptions } = await import('../src/firmware-build.js');
+  const bytes = Buffer.alloc(SIZE, 0xaa);
+  for (const { offset, value } of HOST_SLOTS) bytes.write(value + '\0', offset);
+  const before = Buffer.from(bytes);
+  patchHostname(bytes, 'bridge.lan');
+  for (const { offset, value } of HOST_SLOTS) {
+    const replacement = value.replace('dapt.iptime.org', 'bridge.lan');
+    assert.equal(bytes.subarray(offset, offset + replacement.length).toString(), replacement);
+    assert.ok(bytes.subarray(offset + replacement.length, offset + value.length + 1).every(b => b === 0));
+    assert.equal(bytes[offset - 1], before[offset - 1]);
+    assert.equal(bytes[offset + value.length + 1], before[offset + value.length + 1]);
+  }
+  assert.throws(() => patchHostname(bytes, 'other.lan'), /layout mismatch/);
+  for (const hostname of ['https://x', 'a:80', 'a/b', '가나다', 'too-long-host.lan', '256.1.1.1', '-bad.lan', 'a..b']) {
+    assert.throws(() => validateBuildOptions({ tlsMode: 'bypass', hostname }));
+  }
+  assert.equal(validateBuildOptions({ tlsMode: 'bypass', hostname: '192.168.100.100' }).hostname, '192.168.100.100');
+});

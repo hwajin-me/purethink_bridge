@@ -317,12 +317,11 @@ input[type="checkbox"] {
 .settings p { font-size: 13px; line-height: 1.6; }
 
 .device-settings { margin: 20px 0; }
-.device-row { display: grid; grid-template-columns: 1fr 1.3fr 1.5fr auto; gap: 12px; align-items: end; margin-bottom: 12px; }
+.device-row { display: grid; grid-template-columns: 1fr 2fr auto; gap: 12px; align-items: end; margin-bottom: 12px; }
 .device-row input { width: 100%; min-width: 0; box-sizing: border-box; }
 .device-row label { display: grid; gap: 6px; min-width: 0; }
 .device-actions { display: flex; gap: 12px; }
 .device-status { margin-top: 16px; border-top: 1px solid #dce2e8; padding-top: 12px; overflow-wrap: anywhere; }
-#mqttClients { overflow-wrap: anywhere; }
 @media (max-width: 700px) { .device-row { grid-template-columns: 1fr; } }
 
 .devices-card { grid-column: 1 / -1; }
@@ -334,3 +333,7 @@ input[type="checkbox"] {
 .mqtt-detection p { margin: 8px 0; }
 .mqtt-detection .device-actions { margin-top: 10px; flex-wrap: wrap; }
 #mqttDiscovery { max-height: 500px; overflow: auto; margin-top: 12px; }
+
+.firmware-builder { margin: 20px 0; }
+#buildMessage, #buildCaMessage { overflow-wrap: anywhere; }
+#buildDownloads { display: flex; flex-wrap: wrap; gap: 16px; }

@@ -158,5 +158,9 @@ export function createFirmwareStore({ directory, lookup, download = () => downlo
     res.writeHead(status, headers).end(req.method === 'HEAD' ? undefined : content);
     return true;
   }
-  return { state, load, prepare, handle };
+  return { state, load, prepare, handle, getOriginal: () => {
+    const original = images.get(ORIGINAL);
+    if (!original) throw new Error('Prepare DIV01 firmware first');
+    return Buffer.from(original);
+  } };
 }

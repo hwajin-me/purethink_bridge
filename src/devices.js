@@ -1,74 +1,102 @@
-// Device IDs are topic identifiers; MQTT connection IDs can be different.
+// Device identity comes from /things/<device ID>/..., never MQTT Client ID.
 export function validDeviceId(id) {
   return typeof id === 'string' && id.length > 0 && Buffer.byteLength(id) <= 65520 && !/[/+#\s\u0000]/u.test(id);
 }
-
+function topicDevice(topic, shadowOnly = false) {
+  const match = (shadowOnly ? /^\/things\/([^/]+)\/shadow$/ : /^\/things\/([^/]+)\//).exec(topic);
+  return match && validDeviceId(match[1]) ? match[1] : null;
+}
 export function validateDevices(devices) {
   if (!Array.isArray(devices) || devices.length > 100) throw new Error('devices must be an array of up to 100 devices');
-  const ids = new Set(); const clients = new Set();
+  const ids = new Set();
   return devices.map((device) => {
     if (!device || !validDeviceId(device.id)) throw new Error('Device ID must be a non-empty MQTT topic level without spaces or wildcards');
-    const clientId = device.clientId === undefined || device.clientId === '' ? device.id : device.clientId;
-    if (typeof clientId !== 'string' || !clientId || clientId.includes('\0') || Buffer.byteLength(clientId) > 65535) throw new Error('Invalid device MQTT Client ID');
-    if (ids.has(device.id) || clients.has(clientId)) throw new Error('Device IDs and MQTT Client IDs must be unique');
+    if (ids.has(device.id)) throw new Error('Device IDs must be unique');
     if (device.name !== undefined && (typeof device.name !== 'string' || device.name.length > 100)) throw new Error('Device name must be at most 100 characters');
-    ids.add(device.id); clients.add(clientId);
-    return { id: device.id, clientId, name: device.name || '' };
+    ids.add(device.id);
+    // Drop legacy Client ID mappings during loading and saving.
+    return { id: device.id, name: device.name || '' };
   });
 }
 
-export function createDeviceRegistry(now) {
+export function createDeviceRegistry(now, { clock = Date.now, activityTtlMs = 90000 } = {}) {
   let configured = [];
-  const connections = new Map();
+  // Key by connection object, so anonymous/changing IDs and concurrent sessions
+  // never overwrite one another. A session can report several device topics.
+  const sessions = new Map();
   const entries = new Map();
-  function definition(clientId) {
-    const manual = configured.find((device) => device.clientId === clientId);
-    if (manual) return manual;
-    if (validDeviceId(clientId) && clientId.startsWith('DIV01-') && clientId.length > 6 && !configured.some((device) => device.id === clientId)) {
-      return { id: clientId, clientId, name: '' };
-    }
-  }
-  function ensure(device) {
-    let entry = entries.get(device.id);
+  const manufacturerActivity = new Map();
+  function ensure(id) {
+    let entry = entries.get(id);
     if (!entry) {
-      entry = { id: device.id, status: 'offline', lastSeen: null, lastTopic: null, rx: 0, tx: 0 };
-      entries.set(device.id, entry);
+      entry = { id, status: 'offline', lastSeen: null, lastTopic: null, rx: 0, tx: 0 };
+      entries.set(id, entry);
     }
-    Object.assign(entry, device, { registered: configured.some((item) => item.id === device.id) });
+    const manual = configured.find((device) => device.id === id);
+    entry.name = manual?.name || ''; entry.registered = Boolean(manual);
     return entry;
   }
+  function wantedIds() {
+    const ids = new Set(configured.map((device) => device.id));
+    for (const session of sessions.values()) {
+      for (const topic of session.topics) { const id = topicDevice(topic); if (id) ids.add(id); }
+      for (const id of session.published) ids.add(id);
+    }
+    return ids;
+  }
   function reconcile() {
-    const wanted = new Map(configured.map((device) => [device.id, device]));
-    for (const client of connections.values()) {
-      const device = definition(client.id);
-      if (device) wanted.set(device.id, device);
-    }
+    const wanted = wantedIds();
     for (const [id, entry] of entries) {
-      if (!wanted.has(id) && entry.registered) entries.delete(id);
-      else entry.status = 'offline';
+      if (!wanted.has(id) && entry.registered) { entries.delete(id); manufacturerActivity.delete(id); }
+      else { entry.status = 'offline'; entry.localConnected = false; entry.connection = 'offline'; }
     }
-    for (const device of wanted.values()) ensure(device);
-    for (const client of connections.values()) {
-      const device = definition(client.id);
-      if (device) ensure(device).status = 'connected';
+    for (const id of wanted) ensure(id);
+    for (const session of sessions.values()) {
+      for (const id of session.published) {
+        const entry = ensure(id);
+        entry.status = 'connected'; entry.localConnected = true; entry.connection = 'direct';
+      }
+    }
+    for (const [id, seenAt] of manufacturerActivity) {
+      if (clock() - seenAt >= activityTtlMs) { manufacturerActivity.delete(id); continue; }
+      const entry = entries.get(id);
+      if (entry && !entry.localConnected) { entry.status = 'connected'; entry.connection = 'manufacturer'; }
     }
   }
+  function received(entry, topic) {
+    entry.lastSeen = now(); entry.lastTopic = topic; entry.rx++;
+    reconcile();
+    return entry;
+  }
   return {
+    manufacturerMessage(topic, { retain = false } = {}) {
+      const id = topicDevice(topic, true);
+      const entry = entries.get(id);
+      if (!entry || retain) return false;
+      manufacturerActivity.set(id, clock());
+      received(entry, topic);
+      return true;
+    },
+    localMessage(client, topic, { retain = false } = {}) {
+      const session = sessions.get(client); const id = topicDevice(topic, true);
+      if (!session || !id || retain) return null;
+      session.published.add(id);
+      return received(ensure(id), topic);
+    },
     configure(devices) { configured = validateDevices(devices); reconcile(); },
-    connect(client) { connections.set(client.id, client); reconcile(); const device = this.forClient(client); if (device) device.lastSeen = now(); },
-    disconnect(client) {
-      if (connections.get(client.id) !== client) return;
-      const device = this.forClient(client);
-      if (device) device.lastSeen = now();
-      connections.delete(client.id); reconcile();
+    connect(client) { sessions.set(client, { topics: new Set(), published: new Set() }); },
+    subscribe(client, topics) {
+      const session = sessions.get(client); if (!session) return;
+      for (const topic of topics) session.topics.add(topic);
+      reconcile();
     },
-    forClient(client) {
-      if (connections.get(client.id) !== client) return null;
-      const device = definition(client.id);
-      return device ? entries.get(device.id) : null;
+    unsubscribe(client, topics) {
+      const session = sessions.get(client); if (!session) return;
+      for (const topic of topics) session.topics.delete(topic);
+      reconcile();
     },
-    list() { return [...entries.values()]; },
-    clientIds() { return [...connections.keys()]; },
-    subscriptions() { return new Set(this.list().filter((device) => device.registered || device.status === 'connected').map((device) => device.id)); }
+    disconnect(client) { sessions.delete(client); reconcile(); },
+    list() { reconcile(); return [...entries.values()]; },
+    subscriptions() { return wantedIds(); }
   };
 }

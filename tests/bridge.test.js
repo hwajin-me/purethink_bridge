@@ -1,4 +1,5 @@
 import test from 'node:test';
+import mqttPacket from 'mqtt-packet';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -28,7 +29,8 @@ test('real bridge: auto local MQTT, three-way traffic, multi-device reconnect, c
   const httpPort = await port(); const devicePort = await port(); const proxyPort = await port();
   await fs.writeFile(path.join(data, 'config.json'), JSON.stringify({
     internalMqtt: { enabled: false, host: '', port: localServer.address().port },
-    routerDnat: { password: 'obsolete-router-secret' }
+    routerDnat: { password: 'obsolete-router-secret' },
+    devices: [{ id: 'legacy-device', clientId: 'stale-mapping', name: 'Legacy' }]
   }));
   // All network traffic is confined to fixture brokers. Exercise the real origin lookup
   // before mapping its TEST-NET address to the fixture's loopback socket.
@@ -69,6 +71,7 @@ test('real bridge: auto local MQTT, three-way traffic, multi-device reconnect, c
   await until(async () => { const s = await status(); return s?.state.internal.status === 'connected' && s?.state.manufacturer.status === 'connected'; });
   const saved = JSON.parse(await fs.readFile(path.join(data, 'config.json')));
   assert.equal(saved.internalMqtt.enabled, true); assert.equal(saved.routerDnat, undefined);
+  assert.deepEqual(saved.devices, [{ id: 'legacy-device', name: 'Legacy' }]);
   async function client(options) { const c = mqtt.connect({ reconnectPeriod: 0, ...options }); clients.push(c); await once(c, 'connect'); return c; }
   const observer = await client({ host: '127.0.0.1', port: localServer.address().port });
   const cloud = await client({ host: '127.0.0.1', port: manufacturerServer.address().port, protocol: 'mqtts', rejectUnauthorized: false });
@@ -78,13 +81,16 @@ test('real bridge: auto local MQTT, three-way traffic, multi-device reconnect, c
   for (const clientId of ['mqttjs-observer', 'purethink-bridge', 'DIV01-', 'DIV01-bad/level', 'DIV01-+', 'DIV01-#', 'DIV01-bad id', 'DIV01-trailing\n']) {
     nonDevices.push(await client({ host: '127.0.0.1', port: devicePort, protocol: 'mqtts', rejectUnauthorized: false, clientId }));
   }
-  assert.equal((await status()).state.device.clientId, 'DIV01-B');
+  assert.equal((await status()).state.device.id, null);
   const localMessages = []; const cloudMessages = []; const deviceMessages = [];
   observer.on('message', (topic, body) => localMessages.push([topic, body.toString()]));
   cloud.on('message', (topic, body) => cloudMessages.push([topic, body.toString()]));
   deviceA.on('message', (topic, body) => deviceMessages.push([topic, body.toString()]));
-  await Promise.all([subscribe(observer, '/things/#'), subscribe(cloud, '/things/#'), subscribe(deviceA, '/things/DIV01-A/#')]);
+  await Promise.all([subscribe(observer, '/things/#'), subscribe(cloud, '/things/#'), subscribe(deviceA, '/things/DIV01-A/#'), subscribe(deviceB, '/things/DIV01-B/#')]);
   await until(() => Object.values(manufacturer.clients).some((c) => c.subscriptions['/things/DIV01-A/#'] && c.subscriptions['/things/DIV01-B/#']));
+  await publish(deviceA, '/things/DIV01-A/shadow', 'bootstrap-a');
+  await publish(deviceB, '/things/DIV01-B/shadow', 'bootstrap-b');
+  await until(async () => (await status()).state.device.rx === 2);
   const beforeObserver = (await status()).state.device;
   await publish(nonDevices[0], '/things/DIV01-A/command', 'observer-command');
   await until(() => localMessages.some(([, b]) => b === 'observer-command') && cloudMessages.some(([, b]) => b === 'observer-command'));
@@ -104,7 +110,7 @@ test('real bridge: auto local MQTT, three-way traffic, multi-device reconnect, c
   bridgeCloud.close();
   await until(async () => (await status())?.state.manufacturer.status !== 'connected');
   deviceB.end(true);
-  await until(async () => (await status())?.state.device.clientId === 'DIV01-A');
+  await until(async () => (await status())?.state.device.id === 'DIV01-A');
   await publish(observer, '/things/DIV01-A/command', 'offline-local-command');
   await until(() => deviceMessages.some(([, b]) => b === 'offline-local-command'));
   await until(() => Object.values(manufacturer.clients).some((c) => c !== bridgeCloud && c.subscriptions['/things/DIV01-A/#'] && !c.subscriptions['/things/DIV01-B/#']));
@@ -113,25 +119,27 @@ test('real bridge: auto local MQTT, three-way traffic, multi-device reconnect, c
   await until(() => local.clients['purethink-bridge'] && local.clients['purethink-bridge'] !== oldInternal);
   await until(async () => (await status())?.state.internal.status === 'connected');
   deviceB.end(true);
-  await until(async () => (await status())?.state.device.clientId === 'DIV01-A');
+  await until(async () => (await status())?.state.device.id === 'DIV01-A');
   // Remaining app connections must not keep the physical device online.
   deviceA.end(true);
   await until(async () => (await status())?.state.device.status === 'offline');
-  assert.equal((await status()).state.device.clientId, null);
+  assert.equal((await status()).state.device.id, null);
   await publish(nonDevices[0], '/things/DIV01-A/command', 'observer-without-device');
   assert.equal((await status()).state.device.status, 'offline');
-  assert.equal((await status()).state.device.clientId, null);
+  assert.equal((await status()).state.device.id, null);
   for (const connection of nonDevices) connection.end(true);
   const registered = [
-    { id: 'purethink-living', clientId: 'random-connection-1', name: '거실' },
-    { id: 'AC01-office', clientId: 'random-connection-2', name: '사무실' }
+    { id: 'purethink-living', name: '거실' },
+    { id: 'AC01-office', name: '사무실' }
   ];
   async function saveDevices(devices) {
     return fetch(`http://127.0.0.1:${httpPort}/api/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ devices }) });
   }
-  const manualA = await client({ host: '127.0.0.1', port: devicePort, protocol: 'mqtts', rejectUnauthorized: false, clientId: registered[0].clientId });
-  const manualB = await client({ host: '127.0.0.1', port: devicePort, protocol: 'mqtts', rejectUnauthorized: false, clientId: registered[1].clientId });
+  const manualA = await client({ host: '127.0.0.1', port: devicePort, protocol: 'mqtts', rejectUnauthorized: false, clientId: 'random-connection-1' });
+  const manualB = await client({ host: '127.0.0.1', port: devicePort, protocol: 'mqtts', rejectUnauthorized: false, clientId: 'random-connection-2' });
   assert.equal((await saveDevices(registered)).status, 200);
+  await publish(manualA, '/things/purethink-living/shadow', 'manual-bootstrap-a');
+  await publish(manualB, '/things/AC01-office/shadow', 'manual-bootstrap-b');
   await until(async () => (await status()).state.devices.filter((d) => d.registered && d.status === 'connected').length === 2);
   await until(() => Object.values(manufacturer.clients).some((c) => c.subscriptions['/things/purethink-living/#'] && c.subscriptions['/things/AC01-office/#']));
   const manualMessages = [];
@@ -141,23 +149,52 @@ test('real bridge: auto local MQTT, three-way traffic, multi-device reconnect, c
   await until(() => localMessages.some(([, b]) => b === 'manual-telemetry') && cloudMessages.some(([, b]) => b === 'manual-telemetry'));
   await publish(cloud, '/things/purethink-living/command', 'manual-command');
   await until(() => manualMessages.some(([, b]) => b === 'manual-command'));
-  assert.equal((await status()).state.devices.find((d) => d.id === registered[0].id).rx, 1);
-  const captured = (await status()).state.bridge.mqttDiscovery.connections.find((c) => c.clientId === registered[0].clientId);
+  assert.equal((await status()).state.devices.find((d) => d.id === registered[0].id).rx, 2);
+  const captured = (await status()).state.bridge.mqttDiscovery.connections.find((c) => c.clientId === 'random-connection-1');
   assert.equal(captured.port, devicePort);
   assert.equal(captured.mode, 'mqtt-tls-terminated');
   assert.deepEqual(captured.deviceIds, [registered[0].id]);
   assert.equal((await saveDevices([registered[0], registered[0]])).status, 400);
   assert.deepEqual((await status()).config.devices, registered);
-  // Removing a mapping drops its subscription immediately, keeping the other device.
+  // Removing saved metadata does not hide a device still publishing on a live session.
   assert.equal((await saveDevices([registered[1]])).status, 200);
-  await until(() => Object.values(manufacturer.clients).some((c) => !c.subscriptions['/things/purethink-living/#'] && c.subscriptions['/things/AC01-office/#']));
+  assert.equal((await status()).state.devices.find((d) => d.id === registered[0].id).registered, false);
   assert.equal((await saveDevices(registered)).status, 200);
   manualA.end(true);
   await until(async () => (await status()).state.devices.find((d) => d.id === registered[0].id).status === 'offline');
   assert.equal((await status()).state.devices.find((d) => d.id === registered[1].id).status, 'connected');
-  const manualAgain = await client({ host: '127.0.0.1', port: devicePort, protocol: 'mqtts', rejectUnauthorized: false, clientId: registered[0].clientId });
+  const manualAgain = await client({ host: '127.0.0.1', port: devicePort, protocol: 'mqtts', rejectUnauthorized: false, clientId: 'another-random-client-id' });
+  await publish(manualAgain, '/things/purethink-living/shadow', 'reconnect-telemetry');
   await until(async () => (await status()).state.devices.find((d) => d.id === registered[0].id).status === 'connected');
   manualAgain.end(true); manualB.end(true);
+  // Regression: an anonymous app subscribes, while the actual registered device
+  // reports every 15s through the manufacturer (no local device CONNECT).
+  const anonymous = tls.connect({ host: '127.0.0.1', port: devicePort, rejectUnauthorized: false });
+  t.after(() => anonymous.destroy());
+  await once(anonymous, 'secureConnect');
+  const ack = once(anonymous, 'data');
+  anonymous.write(mqttPacket.generate({ cmd: 'connect', protocolVersion: 4, clientId: '', clean: true, keepalive: 60 }));
+  await ack;
+  anonymous.write(mqttPacket.generate({ cmd: 'subscribe', messageId: 1, subscriptions: [{ topic: '/things/purethink-living/shadow', qos: 0 }] }));
+  await until(async () => (await status()).state.bridge.mqttDiscovery.connections.some((c) => c.clientId === '' && c.deviceIds.includes('purethink-living')));
+  await until(async () => (await status()).state.devices.filter((d) => d.registered && d.status === 'offline').length === 2);
+  const beforeCloud = (await status()).state.devices.find((d) => d.id === registered[0].id).rx;
+  await publish(cloud, '/things/purethink-living/shadow', JSON.stringify({ mac: 511832, topic_id: 0, type: 'LOG', contents: 'A8A81721' }));
+  await until(async () => (await status()).state.devices.find((d) => d.id === registered[0].id).connection === 'manufacturer');
+  const liveState = (await status()).state;
+  const viaCloud = liveState.devices.find((d) => d.id === registered[0].id);
+  assert.equal(viaCloud.status, 'connected');
+  assert.equal(viaCloud.localConnected, false);
+  assert.equal(liveState.device.localConnected, false);
+  assert.equal(viaCloud.rx, beforeCloud + 1);
+  assert.ok(viaCloud.lastSeen);
+  assert.equal(viaCloud.lastTopic, '/things/purethink-living/shadow');
+  assert.equal(liveState.devices.find((d) => d.id === registered[1].id).status, 'offline');
+  // The same empty-ID connection can report multiple actual devices.
+  anonymous.write(Buffer.concat(registered.map((device) => mqttPacket.generate({ cmd: 'publish', topic: `/things/${device.id}/shadow`, payload: 'anonymous-telemetry', qos: 0 }))));
+  await until(async () => (await status()).state.devices.filter((d) => d.registered && d.connection === 'direct').length === 2);
+  assert.equal((await status()).state.device.localConnected, true);
+  anonymous.destroy();
   const previousConfig = await fs.readFile(path.join(data, 'config.json'), 'utf8');
   const invalid = await fetch(`http://127.0.0.1:${httpPort}/api/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ internalMqtt: { port: -1 } }) });
   assert.equal(invalid.status, 400);
