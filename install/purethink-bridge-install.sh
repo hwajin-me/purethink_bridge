@@ -33,7 +33,7 @@ Optional: REPO_URL=<git URL> REPO_REF=<branch or tag> DIV01_FIRMWARE_URL=<origin
 No container IP input is required or saved by this installer.
 Existing bridge source, runtime, environment, configuration and certificates are preserved.
 Git origin is aligned with the selected REPO_URL (default: the fork); no automatic pull.
-Installs bridge (33301/8885) and origin HTTP proxy (6002) and loopback DIV01-only OTA server (6003). No device is flashed automatically.
+Installs bridge (33301/8885) and HTTP/HTTPS passthrough (80/443), origin HTTP proxy (6002) and loopback DIV01-only OTA server (16003). No device is flashed automatically.
 EOF
 }
 
@@ -176,7 +176,7 @@ if __name__ == '__main__':
     image = FIRMWARE.read_bytes()
     if len(image) != 509952 or hashlib.sha256(image).hexdigest() != EXPECTED:
         raise SystemExit('Invalid DIV01 firmware: refusing to start OTA service')
-    server = ThreadingHTTPServer(('127.0.0.1', 6003), Handler)
+    server = ThreadingHTTPServer(('127.0.0.1', 16003), Handler)
     server.firmware = image
     server.serve_forever()
 PY
@@ -230,9 +230,9 @@ import hashlib
 import json
 import urllib.request
 try:
-    with urllib.request.urlopen('http://127.0.0.1:6003/version/combined', timeout=2) as response:
+    with urllib.request.urlopen('http://127.0.0.1:16003/version/combined', timeout=2) as response:
         assert json.load(response)['LastVersionDiv'] == 'ver.220706.1633_DIV01'
-    with urllib.request.urlopen('http://127.0.0.1:6003/firmware/ver.220706.1633_DIV01.bin', timeout=2) as response:
+    with urllib.request.urlopen('http://127.0.0.1:16003/firmware/ver.220706.1633_DIV01.bin', timeout=2) as response:
         assert hashlib.sha256(response.read()).hexdigest() == '9c20bd2d5b113ea38b2fcac483ec7b5a08ff9bf0f494338a1f6ea1134769f343'
 except Exception:
     raise SystemExit(1)
@@ -318,13 +318,37 @@ pb_main() {
   pb_log 'Installing dependencies'
   apt-get install -y --no-install-recommends ca-certificates curl git xz-utils build-essential python3 tzdata iproute2 util-linux passwd dnsutils
   # Existing managed services may already own these ports on a rerun.
-  for target in 33301 8885 6002 6003; do
+  # Match the runtime defaults while respecting explicitly saved overrides.
+  local web_ports
+  web_ports=$(python3 - <<'PYPORTS'
+import pathlib
+import re
+settings = {}
+value = '80,443,17,18,1723,2522,6001,6003,8090,8883,8886,11222,11221,11622,11821,11822,12220,12933,14621,14821,20622,24833'
+file = pathlib.Path('/etc/purethink-bridge.env')
+if file.exists():
+    for line in file.read_text().splitlines():
+        match = re.match(r'^\s*(ORIGIN_TCP_PORTS|CUSTOM_BRIDGE_ENABLED|CUSTOM_HTTP_PORT|HTTPS_PORT|DASHBOARD_HTTPS_PORT)\s*=(.*)$', line)
+        if match:
+            settings[match[1]] = match[2].strip().strip(chr(34) + chr(39))
+value = settings.get('ORIGIN_TCP_PORTS', value)
+ports = [int(part.strip()) for part in value.split(',') if part.strip()]
+if settings.get('CUSTOM_BRIDGE_ENABLED') == 'true':
+    ports.extend([int(settings.get('CUSTOM_HTTP_PORT') or 80), int(settings.get('HTTPS_PORT') or 443)])
+if settings.get('DASHBOARD_HTTPS_PORT'):
+    ports.append(int(settings['DASHBOARD_HTTPS_PORT']))
+if any(port < 1 or port > 65535 for port in ports):
+    raise SystemExit('Invalid ORIGIN_TCP_PORTS')
+print(' '.join(map(str, ports)))
+PYPORTS
+  )
+  for target in 33301 8885 6002 16003 $web_ports; do
     local service=purethink-bridge
-    [[ $target != 6003 ]] || service=purethink-ota
+    [[ $target != 16003 ]] || service=purethink-ota
     if [[ -n $(ss -H -ltn "sport = :$target") ]]; then
       if [[ ! -f /etc/systemd/system/$service.service ]] || ! systemctl is-active --quiet "$service"; then
         # Pre-migration releases served OTA directly on 6002.
-        if [[ $target == 6002 && -f /etc/systemd/system/purethink-ota.service ]] && systemctl is-active --quiet purethink-ota; then
+        if [[ ( $target == 6002 || $target == 6003 ) && -f /etc/systemd/system/purethink-ota.service ]] && systemctl is-active --quiet purethink-ota; then
           continue
         fi
         pb_die "TCP port $target is occupied by another service."
@@ -400,8 +424,16 @@ HTTP_PORT=33301
 DEVICE_MQTT_PORT=8885
 DEVICE_MQTT_HOST=0.0.0.0
 ORIGIN_HTTP_PORT=6002
+ORIGIN_TCP_PORTS=80,443,17,18,1723,2522,6001,6003,8090,8883,8886,11222,11221,11622,11821,11822,12220,12933,14621,14821,20622,24833
+CUSTOM_BRIDGE_ENABLED=false
+# TLS_CERT_FILE=/var/lib/purethink-bridge/certs/fullchain.pem
+# TLS_KEY_FILE=/var/lib/purethink-bridge/certs/server.key
+# TLS_ROOT_CA_FILE=/var/lib/purethink-bridge/certs/root-ca.crt
+# HTTPS_PORT=443
+# DASHBOARD_HTTPS_PORT=33302
+# PORT_SERVICES_FILE=/var/lib/purethink-bridge/services.json
 LOCAL_OTA_ENABLED=false
-LOCAL_OTA_PORT=6003
+LOCAL_OTA_PORT=16003
 FIRMWARE_DIR=/var/lib/purethink-ota/firmware
 EOF
   fi
@@ -472,11 +504,13 @@ try {
   const response = await fetch('http://127.0.0.1:33301/api/status', {signal: AbortSignal.timeout(2000)});
   const body = await response.json();
   if (!response.ok || !body.state?.bridge?.origin || !body.config?.internalMqtt) throw Error('Invalid bridge API response');
+  for (const port of [6002, ...(body.state.bridge.origin.tcpPorts || [])]) {
   await new Promise((resolve, reject) => {
-    const socket = net.connect({host: '127.0.0.1', port: 6002}, () => {socket.end(); resolve();});
-    socket.setTimeout(2000, () => {socket.destroy(); reject(Error('Origin proxy timeout'));});
+    const socket = net.connect({host: '127.0.0.1', port}, () => {socket.end(); resolve();});
+    socket.setTimeout(2000, () => {socket.destroy(); reject(Error(`Origin proxy port ${port} timeout`));});
     socket.on('error', reject);
   });
+  }
   await new Promise((resolve, reject) => {
     const socket = tls.connect({host: '127.0.0.1', port: 8885, rejectUnauthorized: false}, () => {socket.end(); resolve();});
     socket.setTimeout(2000, () => {socket.destroy(); reject(Error('TLS timeout'));});
@@ -503,7 +537,7 @@ JS
   else
     apt-get clean
   fi
-  printf '\nBridge: http://<LXC-IP>:33301\nOrigin proxy: http://<LXC-IP>:6002 (local DIV01 OTA: 127.0.0.1:6003)\nData: %s\nLocal MQTT auto-connects. Follow README UniFi DNS setup; enable local DIV01 OTA only when needed.\n' "$PB_DATA"
+  printf '\nBridge: http://<LXC-IP>:33301\nOrigin proxy: http://<LXC-IP>:6002 (local DIV01 OTA: 127.0.0.1:16003)\nData: %s\nLocal MQTT auto-connects. Follow README UniFi DNS setup; enable local DIV01 OTA only when needed.\n' "$PB_DATA"
 }
 
 # Also supports the Community Scripts bash -c invocation and curl | bash.

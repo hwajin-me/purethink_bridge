@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import { ORIGIN_HOST } from './origin.js';
 import { isVersionRoute } from './firmware.js';
@@ -13,8 +14,9 @@ function endToEndHeaders(headers) {
 }
 
 export function createOriginProxy({ lookup, originPort = 6002,
-  localOta = false, firmware, onError = () => {} }) {
-  return http.createServer((req, res) => {
+  localOta = false, firmware, tlsOptions, onError = () => {} }) {
+  const createServer = tlsOptions ? (handler) => https.createServer(tlsOptions, handler) : http.createServer;
+  return createServer((req, res) => {
     // Destination is fixed; client Host/absolute URLs cannot turn this into an open proxy.
     if (!req.url.startsWith('/') || req.url.startsWith('//')) {
       res.writeHead(400).end('Origin-form request target required');
@@ -53,19 +55,33 @@ export function createOriginProxy({ lookup, originPort = 6002,
   });
 }
 
-// Optional additional origin services, including HTTPS without replacing its certificate.
-export function createTcpProxy({ port, lookup, onError = () => {} }) {
+// Standard web ports are required when LAN DNS replaces the entire hostname.
+export const DEFAULT_TCP_PORTS = '80,443,17,18,1723,2522,6001,6003,8090,8883,8886,11222,11221,11622,11821,11822,12220,12933,14621,14821,20622,24833';
+export function originTcpPorts(value = DEFAULT_TCP_PORTS, reserved = []) {
+  const ports = [...new Set(value.split(',').map((part) => part.trim()).filter(Boolean).map(Number))];
+  for (const port of ports) {
+    if (!Number.isInteger(port) || port < 1 || port > 65535 || reserved.includes(port)) {
+      throw new Error(`Invalid or conflicting ORIGIN_TCP_PORTS port: ${port}`);
+    }
+  }
+  return ports;
+}
+
+// Forward TLS bytes unchanged: the iOS client validates the origin certificate,
+// and its original SNI, ALPN, client certificates and pinned keys reach the origin.
+export function createTcpProxy({ port, lookup, target, onError = () => {}, onConnect = () => {}, onConnection = () => {} }) {
   return net.createServer({ allowHalfOpen: true }, (client) => {
-    const upstream = net.connect({ host: ORIGIN_HOST, port, lookup, family: 4, allowHalfOpen: true });
+    onConnection(client);
+    const upstream = net.connect({ host: target?.host || ORIGIN_HOST, port: target?.port || port, lookup: target ? undefined : lookup, family: 4, allowHalfOpen: true });
     const timeout = setTimeout(() => upstream.destroy(new Error('Origin TCP connect timeout')), 10000);
-    upstream.once('connect', () => clearTimeout(timeout));
+    upstream.once('connect', () => { clearTimeout(timeout); onConnect(); });
     upstream.once('close', () => {
       clearTimeout(timeout);
       // Let pipe drain a complete response before closing the downstream socket.
       if (!upstream.readableEnded) client.destroy();
     });
     client.once('close', () => upstream.destroy());
-    upstream.on('error', (error) => { onError(error); client.destroy(); });
+    upstream.on('error', (error) => { onError(error, client); client.destroy(); });
     client.on('error', () => upstream.destroy());
     client.pipe(upstream).pipe(client);
   });

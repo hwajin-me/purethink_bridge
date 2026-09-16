@@ -97,7 +97,7 @@ sha256sum -c /tmp/state.sha
 [[ $(git -C /opt/purethink-bridge remote get-url --push origin) == "$REPO_URL" ]]
 python3 - <<'PY'
 import hashlib, json, urllib.request, urllib.error
-base='http://127.0.0.1:6003'
+base='http://127.0.0.1:16003'
 for method in ['GET', 'POST', 'PUT']:
     with urllib.request.urlopen(urllib.request.Request(base+'/api/FirmwareVersionCombined', method=method)) as r:
         assert json.load(r)['LastVersionDiv']=='ver.220706.1633_DIV01'

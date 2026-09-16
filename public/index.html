@@ -115,6 +115,7 @@
             <dt>Origin IP</dt><dd id="originAddresses">-</dd>
             <dt>Public DNS</dt><dd id="originDns">-</dd>
             <dt>Ports</dt><dd id="originPorts">-</dd>
+            <dt>HTTPS :443</dt><dd id="originHttps">-</dd>
             <dt>OTA</dt><dd id="originOta">-</dd>
             <dt>Firmware</dt><dd id="firmwareStatus">-</dd>
             <dt>Available</dt><dd id="firmwareAvailable">-</dd>
@@ -124,6 +125,11 @@
           <button id="prepareFirmware" type="button">Prepare / Retry DIV01 Firmware</button>
           <p>원본 조회: 1.1.1.1 → 1.0.0.1 → 8.8.8.8 → 8.8.4.4. 내부 MQTT는 시작 시 자동 연결하고 끊기면 재연결합니다.</p>
         </section>
+      </section>
+
+      <section class="payloads">
+        <h2>Port Access</h2>
+        <pre id="portAccess" style="max-height: 260px; overflow: auto; white-space: pre-wrap"></pre>
       </section>
 
       <section class="payloads">

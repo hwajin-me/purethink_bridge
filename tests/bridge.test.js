@@ -53,7 +53,7 @@ test('real bridge: auto local MQTT, three-way traffic, multi-device reconnect, c
   `);
   const spawnBridge = () => spawn(process.execPath, ['--import', preload, 'src/index.js'], { env: { ...process.env,
     DATA_DIR: data, HTTP_PORT: String(httpPort), DEVICE_MQTT_PORT: String(devicePort),
-    ORIGIN_HTTP_PORT: String(proxyPort), INTERNAL_MQTT_HOST: '127.0.0.1', ORIGIN_TCP_PORTS: '', LOCAL_OTA_ENABLED: 'false', FIRMWARE_AUTO_PREPARE: 'false' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    ORIGIN_HTTP_PORT: String(proxyPort), INTERNAL_MQTT_HOST: '127.0.0.1', ORIGIN_TCP_PORTS: '', LOCAL_OTA_ENABLED: 'false', FIRMWARE_AUTO_PREPARE: 'false', CUSTOM_BRIDGE_ENABLED: 'false', PORT_SERVICES_FILE: '/nonexistent/must-not-load.json' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let child = spawnBridge();
   let output = '';
   const watch = (process) => { process.stdout.on('data', (chunk) => { output += chunk; }); process.stderr.on('data', (chunk) => { output += chunk; }); };

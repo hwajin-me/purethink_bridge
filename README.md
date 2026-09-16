@@ -209,7 +209,7 @@ Bridge가 시작되면 DIV01 원본을 공용 DNS 경로로 내려받아 크기�
 
 준비된 **DIV01 원본 `1630`과 패치 `1633` 파일은 OTA 광고 설정과 관계없이 6002에서 직접 다운로드**할 수 있습니다. 인터넷이 끊겨도 제공되며 GET/HEAD와 단일 HTTP Range 요청을 지원합니다. 다른 모델·파일은 원본으로 전달합니다. 패치 파일이 없을 때에는 503을 반환하고 준비되지 않은 패치 버전은 광고하지 않습니다.
 
-`LOCAL_OTA_ENABLED=true`는 `/version/combined`, `/api/FirmwareVersionCombined`, `/api/GetFirmwareVersionCombined`에서 검증된 DIV01 패치 버전을 안내하도록 합니다. 기본값 false에서는 제조사 버전 응답을 그대로 전달합니다. **DIV01 업데이트 작업에만 활성화하고, 다른 모델이 함께 있는 환경에서는 활성화하지 마세요.** 다른 모델의 패치는 검증되지 않았습니다. LXC의 기존 Python OTA 서비스(127.0.0.1:6003)는 진단/호환용으로 유지되지만 Bridge의 파일 제공에는 필요하지 않습니다.
+`LOCAL_OTA_ENABLED=true`는 `/version/combined`, `/api/FirmwareVersionCombined`, `/api/GetFirmwareVersionCombined`에서 검증된 DIV01 패치 버전을 안내하도록 합니다. 기본값 false에서는 제조사 버전 응답을 그대로 전달합니다. **DIV01 업데이트 작업에만 활성화하고, 다른 모델이 함께 있는 환경에서는 활성화하지 마세요.** 다른 모델의 패치는 검증되지 않았습니다. LXC의 기존 Python OTA 서비스(127.0.0.1:16003)는 진단/호환용으로 유지되지만 Bridge의 파일 제공에는 필요하지 않습니다.
 
 대시보드에서 Firmware 상태와 준비된 파일을 확인하고 `Prepare / Retry DIV01 Firmware`로 재시도할 수 있습니다. 기기 플래시는 자동으로 수행하지 않습니다. 수동 준비와 다운로드 예시:
 
@@ -263,7 +263,7 @@ Node.js 22와 systemd로 실행하며 Docker는 필요하지 않습니다. Ubunt
 1. Proxmox 웹 UI에서 Ubuntu **24.04** LXC 템플릿을 내려받고 `Create CT`로 컨테이너를 생성합니다.
 2. 시작값으로 Unprivileged 컨테이너(Nesting 활성화), CPU 2코어, RAM 1024MB, 디스크 8GB를 사용합니다. 브릿지는 기기 LAN에 연결된 브릿지(예: `vmbr0`)로 지정합니다.
 3. 컨테이너에 고정 IPv4, 게이트웨이, DNS를 설정하고 시작합니다. GitHub, nodejs.org, npm registry와 Ubuntu 패키지 저장소에 접근할 수 있어야 합니다.
-4. 방화벽을 사용 중이면 기기에서 LXC의 TCP `8885`, 관리 PC에서 TCP `33301`, OTA에 사용하는 기기와 앱에서 TCP `6002` 접근을 허용합니다. 원본 TCP `8885`/`6002`, 내부 MQTT 포트와 지정 공용 DNS 네 곳의 UDP/TCP `53`으로 나가는 연결도 필요합니다. 대시보드에는 인증 기능이 없으므로 신뢰하는 LAN에서만 접근하도록 제한하세요.
+4. 방화벽을 사용 중이면 기기에서 LXC의 TCP `8885` 및 앱에서 TCP `80`/`443`, 관리 PC에서 TCP `33301`, OTA에 사용하는 기기와 앱에서 TCP `6002` 접근을 허용합니다. 원본 TCP `80`/`443`/`8885`/`6002`, 내부 MQTT 포트와 지정 공용 DNS 네 곳의 UDP/TCP `53`으로 나가는 연결도 필요합니다. 대시보드에는 인증 기능이 없으므로 신뢰하는 LAN에서만 접근하도록 제한하세요.
 
 이 저장소를 받은 **Proxmox 호스트**에서 스크립트를 복사하고 실행합니다. 아래 `120`은 실제 CT ID로 바꾸세요. 설치 스크립트에는 컨테이너 IP를 입력하지 않습니다.
 
@@ -294,7 +294,7 @@ bash /root/purethink-bridge-install.sh
 #### 자동 설치되는 DIV01 OTA
 
 - 브릿지: `purethink-bridge.service`, 대시보드 `33301`, MQTT/TLS `8885`, 원본 HTTP 프록시 `6002`
-- OTA: `purethink-ota.service`, loopback HTTP `6003`, 재부팅 시 자동 시작
+- OTA: `purethink-ota.service`, loopback HTTP `16003`, 재부팅 시 자동 시작
 - OTA 코드: `/opt/purethink-ota/server.py`
 - 별도 패치 스크립트: `/opt/purethink-ota/patch-div01.py`
 - 관리 명령: `/usr/local/sbin/purethink-manage`
@@ -311,8 +311,8 @@ DIV01_FIRMWARE_URL=file:///root/ver.220706.1630_DIV01.bin bash /root/purethink-b
 설치 완료 후 수동 펌웨어 패치 단계는 생략할 수 있습니다. 위 DNS 설정과 `LOCAL_OTA_ENABLED` 절차에 따라 **DIV01만** 업데이트하세요. 진단용 OTA 백엔드는 다른 모델·파일에 404를 반환하고, Bridge는 검증된 DIV01 두 파일을 로컬에서 제공하며 나머지 요청은 원본으로 전달합니다. 기기에 자동 플래시하지 않습니다.
 
 ```bash
-curl -fsS http://127.0.0.1:6003/version/combined
-curl -I http://127.0.0.1:6003/firmware/ver.220706.1633_DIV01.bin
+curl -fsS http://127.0.0.1:16003/version/combined
+curl -I http://127.0.0.1:16003/firmware/ver.220706.1633_DIV01.bin
 journalctl -u purethink-ota -n 50 --no-pager
 # OTA 작업 후 서버도 중지하려면:
 systemctl disable --now purethink-ota
@@ -388,7 +388,7 @@ journalctl -u purethink-bridge -n 50 --no-pager
 curl -fsS http://127.0.0.1:33301/api/status
 ```
 
-실패하면 서비스를 중지한 상태에서 원인을 해결하거나 컨테이너 백업으로 복구하세요. 태그로 설치해 detached HEAD 상태라면 `git pull` 대신 업데이트할 태그를 명시적으로 fetch/checkout해야 합니다. 위 절차는 앱과 서비스 구성을 갱신하여 기존 6002 OTA를 loopback 6003으로 이전합니다. Node.js는 변경하지 않습니다. 독립 설치의 Node.js는 `/opt/purethink-node`에 있으므로 OS 패키지 업데이트로 갱신되지 않습니다. Community Scripts 모드는 `setup_nodejs`로 설치한 시스템 런타임에 연결됩니다. 런타임 업데이트는 별도로 관리하세요.
+실패하면 서비스를 중지한 상태에서 원인을 해결하거나 컨테이너 백업으로 복구하세요. 태그로 설치해 detached HEAD 상태라면 `git pull` 대신 업데이트할 태그를 명시적으로 fetch/checkout해야 합니다. 위 절차는 앱과 서비스 구성을 갱신하여 기존 6002 OTA를 loopback 16003으로 이전합니다. Node.js는 변경하지 않습니다. 독립 설치의 Node.js는 `/opt/purethink-node`에 있으므로 OS 패키지 업데이트로 갱신되지 않습니다. Community Scripts 모드는 `setup_nodejs`로 설치한 시스템 런타임에 연결됩니다. 런타임 업데이트는 별도로 관리하세요.
 
 #### 설치 스크립트 검증
 
@@ -447,7 +447,7 @@ docker run -d \
 
 `--network host`를 사용하면 컨테이너가 우분투 서버의 네트워크를 그대로 사용합니다.
 따라서 `-p 8885:8885`, `-p 33301:33301` 포트 매핑은 넣지 않습니다.
-우분투 서버에서 `8885`, `6002`, `33301` 포트를 이미 다른 서비스가 사용 중이면 컨테이너 실행이 실패할 수 있습니다.
+우분투 서버에서 `80`, `443`, `8885`, `6002`, `33301` 포트를 이미 다른 서비스가 사용 중이면 컨테이너 실행이 실패할 수 있습니다.
 
 상태 확인:
 
@@ -517,13 +517,26 @@ Device: offline
 
 원본 MQTT/HTTP와 추가 TCP 프록시는 모두 같은 전용 resolver를 사용합니다. 공용 DNS를 순서대로 시도하고 TTL(최대 300초) 동안 캐시합니다. 동시 조회는 하나로 합치고 IP가 여러 개면 새 연결마다 순환합니다. 조회 실패 시 OS DNS 또는 만료된 IP를 사용하지 않으며 다음 연결 시 재시도합니다. MQTT는 5초마다 자동 재연결하고 연결된 모든 기기 토픽을 다시 구독합니다.
 
-기본 대체 포트는 `8885`(MQTT/TLS)와 `6002`(HTTP)입니다. 원본에서 추가로 사용하는 TCP 서비스가 있다면 환경 변수로 같은 포트의 전달을 켭니다. 예를 들어 HTTP/HTTPS도 사용한다면:
+주요 대체 포트는 `80`(HTTP), `443`(HTTPS), `8885`(MQTT/TLS), `6002`(펌웨어/API)입니다. `80`과 `443`은 원본의 같은 포트로 TCP를 그대로 전달합니다. HTTPS의 인증서·SNI·ALPN(HTTP/2 포함)은 원본과 iOS 앱 사이에 유지되며 기본 bypass 모드에서는 MQTT용 자체 서명 인증서를 HTTPS에 사용하지 않습니다. 추가 TCP 포트 목록과 custom 모드 설정은 아래 절을 참조하세요.
 
-```text
-ORIGIN_TCP_PORTS=80,443
+`ORIGIN_TCP_PORTS`를 지정하면 기본 목록을 대체합니다. 추가 HTTPS 포트가 필요한 예시는 `ORIGIN_TCP_PORTS=80,443,8443`입니다. 명시적으로 빈 값이면 TCP 전달을 비활성화합니다.
+
+#### 기존 설치에서 iOS HTTPS 연결 복구
+
+80/443 bypass는 별도 환경 변수 없이 기본 활성화됩니다. 기존 환경 파일에 `ORIGIN_TCP_PORTS` 항목이 없어도 적용됩니다. 소스 업데이트 후 설치 스크립트를 재실행하면 LXC 서비스의 `CAP_NET_BIND_SERVICE` 권한과 포트 검사를 함께 적용합니다. 과거에 `ORIGIN_TCP_PORTS`를 빈 값이나 다른 포트 목록으로 명시했다면 해당 줄을 삭제해 기본값을 사용하거나 `80,443`을 포함하도록 수정하세요.
+
+```bash
+systemctl daemon-reload
+systemctl restart purethink-bridge
+ss -ltnp | grep -E ':80 |:443 |:6002 |:8885 '
+curl -fsS http://127.0.0.1:33301/api/status
 ```
 
-HTTPS는 TLS를 종료하지 않고 원본 인증서와 바이트를 그대로 전달합니다. 해당 포트의 인바운드·아웃바운드를 허용하고 기존 서비스와 충돌하지 않게 하세요. LXC 서비스는 낮은 포트 바인딩 권한을 포함합니다. Docker bridge 네트워크에서는 `6002`, `8885`, `33301` 및 추가 포트를 각각 게시해야 합니다. UDP나 목록에 없는 포트는 전달하지 않습니다. DNS 변경 자체가 모든 포트를 프록시하는 것은 아닙니다.
+UniFi/VPN 방화벽에서 iPhone → Bridge TCP 443/80, Bridge → 원본 TCP 443/80 연결을 허용하세요. Docker `--network host`에서는 호스트 포트를 사용하며, bridge 네트워크에서는 `-p 80:80 -p 443:443`도 게시해야 합니다. 기존 웹 서버가 해당 포트를 점유하면 해결 후 시작하세요. IPv6 AAAA를 사용하는 iPhone은 IPv4 A 레코드만 바꿔도 다른 경로로 접속할 수 있으므로 실제 DNS 응답을 확인하세요.
+
+대시보드 `HTTPS :443`와 `/api/status`의 `state.bridge.origin.tcpServices`에 리스닝 상태, 접속 횟수와 원본 연결 오류를 표시합니다. 접속 횟수가 늘지 않으면 DNS·VPN·방화벽 경로를, 횟수가 늘면서 원본 시간 초과가 보이면 원본 포트와 아웃바운드 경로를 확인합니다. TCP 원본 연결은 10초 내 연결되지 않으면 종료하며 원본 인증서 오류를 우회하지 않습니다. 이 환경에서 원본 443 연결 자체가 안 된다면 전달만으로 정상 HTTPS를 만들 수는 없습니다. 앱이 비표준 HTTPS 포트를 사용하는 경우 그 포트를 `ORIGIN_TCP_PORTS`에 포함하세요.
+
+UDP나 목록에 없는 포트는 전달하지 않습니다.
 
 이 구성은 원본 서비스의 LAN 진입점을 대체합니다. 제조사 HTTP API를 로컬에서 재구현한 것은 아니므로 원본 장애 시 HTTP·제조사 앱 기능은 실패할 수 있습니다. 기기–내부 MQTT–Home Assistant의 로컬 제어는 원본과 독립적으로 유지됩니다. MQTT의 제조사 토픽은 `/things/` 범위를 지원하며 기존 펌웨어의 인증서 검증 패치는 여전히 필요합니다.
 
@@ -531,7 +544,7 @@ HTTPS는 TLS를 종료하지 않고 원본 인증서와 바이트를 그대로 �
 
 새 설치와 Docker/직접 실행 모두 `127.0.0.1:1883` 자동 연결이 기본입니다. Docker/직접 실행에서 다른 기본 서버를 쓰려면 첫 실행 전에 `INTERNAL_MQTT_HOST`를 설정하세요. LXC 설치 후에는 대시보드에서 서버를 변경하세요. `INTERNAL_MQTT_ENABLED=false`로 첫 실행 자동 연결을 끌 수 있습니다. 이미 저장한 host/port/ID/PW 및 비활성화 선택은 보존합니다. 잘못된 포트·토픽·타입은 저장 전에 거부하고, 설정은 권한 0600의 임시 파일을 원자적으로 교체해 보관합니다. 빈 비밀번호 입력은 기존 값을 유지하며 `Clear saved password`로 명시적으로 삭제할 수 있습니다. 예전 버전의 host가 비어 있는 초기 설정만 자동 연결 기본값으로 이전합니다. 별도 MQTT 브로커를 자동 설치하지는 않습니다. `127.0.0.1`은 Bridge가 실행되는 호스트 또는 컨테이너 자신을 가리킵니다. Docker bridge 네트워크에서 별도 브로커를 사용하면 해당 브로커의 서비스명이나 접근 가능한 IP를 지정하세요.
 
-ASUS 공유기 SSH/DNAT UI·API·의존성은 제거되었습니다. 남아 있는 `routerDnat` 설정과 공유기 비밀번호는 앱 시작 시 설정 파일에서 제거합니다. 장비의 기존 네트워크 규칙은 앱이 변경하지 않습니다. 이전 서버에서 6002를 OTA가 점유하고 있다면 **소스 업데이트 후 설치 스크립트를 다시 실행**하여 6003으로 이전한 뒤 DNS를 전환하세요.
+ASUS 공유기 SSH/DNAT UI·API·의존성은 제거되었습니다. 남아 있는 `routerDnat` 설정과 공유기 비밀번호는 앱 시작 시 설정 파일에서 제거합니다. 장비의 기존 네트워크 규칙은 앱이 변경하지 않습니다. 이전 서버에서 6002를 OTA가 점유하고 있다면 **소스 업데이트 후 설치 스크립트를 다시 실행**하여 16003으로 이전한 뒤 DNS를 전환하세요.
 
 ## 11. Home Assistant 설정
 
@@ -659,3 +672,122 @@ ss -ltnp | grep 8885
 `npm test`는 DNS, HTTP/TCP 프록시, 펌웨어 검증·패치·오프라인 다운로드·Range, 동일 MQTT 메시지의 에코 억제, 원본 연결 중단 중 기기 이탈, 로컬 MQTT 재연결, 잘못된 설정의 거부를 확인합니다. `tests/install-smoke.sh`는 실제 DIV01 원본 및 결과 해시, 구버전 설치 보호, 서비스·설정 보존을 확인합니다. 합성 펌웨어를 쓰는 단위 테스트와 실제 원본 SHA-256 검증은 별개로 수행합니다.
 
 MQTT 3에서는 수신 메시지에 발행자 ID가 없으므로 에코는 토픽·본문·개수·5초 만료 시간으로 추적합니다. 다른 클라이언트가 같은 토픽·본문을 그 시간에 발행하는 경우까지 완벽히 구별할 수는 없습니다. 원본 HTTP API·다른 모델의 OTA를 로컬에서 재구현한 것은 아닙니다.
+
+### 사용자 인증서와 Root CA, custom Bridge on/off
+
+`CUSTOM_BRIDGE_ENABLED=false`가 기본입니다. 기본 모드에서는 80/443을 원본에 TCP 전달하므로 원본 인증서가 사용됩니다. `true`로 변경하면 Bridge가 80의 HTTP와 443의 HTTPS를 직접 처리합니다. 검증된 펌웨어 파일은 로컬에서 제공하고, 나머지 경로는 공개 DNS로 조회한 원본의 HTTP 6002로 전달합니다. 원본의 모든 HTTPS API를 오프라인으로 재구현한 것은 아닙니다. 관리 화면/API는 별도 관리 포트에만 있습니다.
+
+LXC의 `/etc/purethink-bridge.env`에 다음을 설정합니다. Docker 또는 직접 실행에서도 같은 환경변수를 사용합니다.
+
+```dotenv
+CUSTOM_BRIDGE_ENABLED=true
+TLS_CERT_FILE=/var/lib/purethink-bridge/certs/fullchain.pem
+TLS_KEY_FILE=/var/lib/purethink-bridge/certs/server.key
+TLS_ROOT_CA_FILE=/var/lib/purethink-bridge/certs/root-ca.crt
+HTTPS_PORT=443
+# 선택: 관리 화면도 동일한 인증서로 HTTPS 제공
+DASHBOARD_HTTPS_PORT=33302
+# 선택: 기존 DIV01 장치에 로컬 패치 버전 광고
+LOCAL_OTA_ENABLED=true
+```
+
+- `fullchain.pem`: `dapt.iptime.org` SAN이 있는 PEM 서버 인증서, 이어서 중간 CA 인증서들을 발급 순서로 넣습니다. Root CA가 직접 서명했다면 서버 인증서만 넣습니다.
+- `server.key`: 서버 인증서와 일치하는 암호화되지 않은 PEM 개인키. Root CA 개인키는 Bridge에 복사하지 않습니다.
+- `root-ca.crt`: 선택적인 공개 Root CA 인증서. 설정하면 서버 인증서 체인이 이 Root CA로 연결되는지 시작 시 검증합니다. 인증서/키 오류, 만료, 호스트명 불일치가 있으면 시작을 중단합니다.
+- 인증서 경로를 설정하면 MQTT TLS 8885에도 동일한 인증서를 적용합니다. custom 모드를 꺼도 명시한 MQTT 인증서와 선택적 관리 HTTPS 설정은 유지됩니다.
+- `CUSTOM_HTTP_PORT`(기본 80), `HTTPS_PORT`(기본 443)를 바꾸면 해당 포트에서 직접 처리합니다. `ORIGIN_TCP_PORTS`의 동일 포트는 중복 바인딩하지 않습니다.
+
+인증서 파일은 `purethink-bridge` 사용자가 읽을 수 있어야 합니다. 개인키 권한은 `0600`, 소유자는 `purethink-bridge`로 설정하고 상위 디렉터리 접근 권한도 확인합니다. 설정/인증서 변경 후 `systemctl restart purethink-bridge`로 적용합니다. 설치 스크립트를 다시 실행해도 기존 환경 파일과 인증서를 보존합니다. Docker에서는 인증서 디렉터리를 읽기 전용 마운트하고 사용할 80/443/33302/8885 포트를 게시합니다.
+
+HTTPS 펌웨어 다운로드 예: `https://dapt.iptime.org/firmware/ver.220706.1633_DIV01.bin`. 기존 파일 경로의 GET/HEAD/Range 처리를 그대로 지원합니다. Root CA 공개 인증서는 관리 포트의 `/tls/root-ca.crt`에서 내려받을 수 있습니다. `/api/status`에서 모드와 서버 인증서 지문/만료일을 확인할 수 있습니다.
+
+클라이언트가 사용자 Root CA를 신뢰하도록 별도로 설정해야 합니다. 서버의 Root CA 설정 자체가 iOS/장치의 신뢰 저장소를 변경하지 않으며, 앱이 인증서를 고정(pin)했다면 사용자 CA 인증서도 거부할 수 있습니다. 기존 DIV01 패치는 인증서 검증 우회 패치이며, Root CA 내장 또는 HTTPS OTA 기능 추가 패치가 아닙니다. 따라서 기존 OTA 메타데이터는 HTTP 6002를 유지합니다. HTTPS 다운로드는 해당 CA를 신뢰하고 HTTPS를 지원하는 클라이언트에서 사용할 수 있습니다.
+
+대체 모드를 끄려면 `CUSTOM_BRIDGE_ENABLED=false`로 변경하고 서비스를 재시작합니다. 로컬 패치 버전 광고까지 끄려면 `LOCAL_OTA_ENABLED=false`도 설정합니다. 기본값은 둘 다 `false`입니다.
+
+### 추가 서비스 포트 및 접근 기록
+
+기본 TCP 전달 포트는 `80,443,17,18,1723,2522,6001,6003,8090,8883,8886,11222,11221,11622,11821,11822,12220,12933,14621,14821,20622,24833`입니다. 기존 설치에서 `ORIGIN_TCP_PORTS=80,443`을 저장했다면 그 줄을 삭제하거나 위 목록으로 바꾸고 재시작해야 추가 포트가 활성화됩니다. Docker에서는 필요한 포트를 별도로 게시하고 UniFi 방화벽에서도 허용해야 합니다.
+
+6003은 이제 원본 전달용입니다. 기존 loopback Python OTA 서비스는 **16003**으로 이전하므로 LXC에서는 업데이트한 설치 스크립트를 재실행하세요. 런타임 코드만 바꾸면 이전 OTA 서비스의 6003과 충돌할 수 있습니다.
+
+custom 모드에서도 별도 지정이 없는 추가 포트는 원본 서버의 동일 포트로 전달합니다. 해당 프로토콜을 처리하는 로컬 서비스가 있다면 다음 JSON으로 목적지를 지정합니다. 이 매핑은 `CUSTOM_BRIDGE_ENABLED=true`일 때만 적용됩니다.
+
+```dotenv
+CUSTOM_TCP_ROUTES='{"8883":{"host":"127.0.0.1","port":1884},"6003":{"host":"127.0.0.1","port":16003}}'
+```
+
+이는 TCP 바이트 전달입니다. 예시의 8883 클라이언트가 TLS를 사용하면 목적지 1884도 TLS를 처리해야 하므로 실제 로컬 서비스의 TLS 포트로 바꾸세요. 포트 번호만으로 프로토콜을 추정하거나 TLS를 제거하지 않습니다. 설정 대상은 활성화된 TCP 전달 포트여야 하며, IPv4 주소와 포트를 지정합니다. custom 모드를 끄면 모든 매핑이 무시되어 원본으로 전달됩니다. 각 서버의 기능을 자동으로 재구현하지 않습니다. UDP 및 TCP 외 프로토콜은 아직 지원하지 않습니다.
+
+대시보드 **Port Access**와 `/api/status`의 `state.bridge.access`에서 포트별 누적 접속 수, 현재 연결 수, 최근 기록을 확인합니다. 디스크 기록은 `DATA_DIR/logs/access.jsonl`에 남으며 5 MiB마다 `.1`로 한 번 회전합니다. 최근 메모리 기록은 500건이고 카운터는 재시작 시 초기화됩니다. 연결/종료 시각, 접속 IP·포트, 수신 포트, 송수신 바이트, 원본 연결 오류를 기록하며 통신 내용은 기록하지 않습니다. 관리 화면 접근도 포함됩니다.
+
+### 포트별 TLS 프록시 / Node.js 서버 시뮬레이션
+
+`PORT_SERVICES_FILE`로 포트별 서비스 구현을 선택할 수 있습니다. **`CUSTOM_BRIDGE_ENABLED=false`가 기본이며 OFF 상태에서는 이 파일과 모듈을 로드하지 않습니다.** ON 상태에서 파일에 없는 포트는 기존 동작을 유지합니다. 기존 `CUSTOM_TCP_ROUTES`보다 이 파일의 설정을 우선 적용합니다.
+
+적용 가능한 포트는 `ORIGIN_TCP_PORTS`에 활성화된 모든 포트와 Bridge의 HTTP/HTTPS·MQTT·펌웨어 포트입니다. 기본 구성에서는 요청된 추가 20개와 80, 443, 8885, 6002를 포함한 24개 포트입니다. 관리 화면 포트는 대체하지 않습니다.
+
+```dotenv
+CUSTOM_BRIDGE_ENABLED=true
+TLS_CERT_FILE=/var/lib/purethink-bridge/certs/fullchain.pem
+TLS_KEY_FILE=/var/lib/purethink-bridge/certs/server.key
+TLS_ROOT_CA_FILE=/var/lib/purethink-bridge/certs/root-ca.crt
+PORT_SERVICES_FILE=/var/lib/purethink-bridge/services.json
+```
+
+`services.json` 예:
+
+```json
+{
+  "8883": {
+    "mode": "proxy",
+    "transport": "tls",
+    "upstream": {
+      "host": "dapt.iptime.org",
+      "port": 8883,
+      "transport": "tls",
+      "servername": "dapt.iptime.org"
+    }
+  },
+  "6001": {
+    "mode": "proxy",
+    "transport": "tls",
+    "upstream": { "host": "dapt.iptime.org", "port": 6001, "transport": "tcp" }
+  },
+  "20622": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "/opt/purethink-bridge/src/services/ports/20622.js",
+    "options": { "maxKeys": 1000 }
+  }
+}
+```
+
+- `proxy`: Bridge가 클라이언트 TLS를 사용자 인증서로 종료하고, 복호화한 바이트를 목적지의 TCP 또는 별도 TLS 연결로 전달합니다. 요청 내용을 HTTP로 가정하지 않아 바이너리 프로토콜에도 사용할 수 있습니다. 클라이언트가 평문이면 `transport: "tcp"`를 선택합니다. 원본의 실제 TCP/TLS 여부는 포트 번호로 추정하지 말고 확인 후 지정하세요.
+- 원본 `dapt.iptime.org`는 기존 공용 DNS resolver를 사용합니다. 다른 목적지는 IPv4로 지정합니다. 원본 TLS 인증서는 기본 검증하며, 사설 CA는 `upstream.caFile`로 지정합니다. 클라이언트에 제시하는 인증서와 원본의 신뢰 CA는 별개입니다. 명시적인 `rejectUnauthorized: false`는 원본 인증서 검증을 끄므로 검증 가능한 CA 설정을 우선 사용하세요.
+- `simulate`: 원본 연결 없이 Node.js 모듈에서 실제 요청을 처리합니다. `protocol: "stream"`은 TCP/TLS 소켓, `protocol: "http"`는 HTTP/HTTPS 요청·응답 객체를 받습니다. `transport: "tls"`는 두 경우 모두 사용자 서버 인증서를 사용합니다.
+- 파일 경로(`module`, `upstream.caFile`)는 JSON 파일 위치를 기준으로 해석합니다. 서비스 사용자에게 읽기 권한이 있어야 합니다. 모듈은 서버 권한으로 실행되는 신뢰된 코드이며 업로드 API는 제공하지 않습니다. 설정/소스 변경은 서비스 재시작 후 적용됩니다.
+
+각 포트의 독립 구현 파일은 `src/services/ports/<포트>.js`에 있습니다. `createHandler({ port, config, log })`를 export하고 소켓 또는 HTTP 요청 처리 함수를 반환하면 됩니다. factory는 async도 지원하며 포트당 한 번 호출되어 상태를 유지할 수 있습니다.
+
+```js
+export function createHandler({ port, config, log }) {
+  return (socket) => {
+    socket.on('data', (bytes) => {
+      // 실제 프로토콜에 맞는 프레이밍·명령 처리·응답을 여기 구현합니다.
+      socket.write(bytes); // 최소 echo 예제
+    });
+    socket.on('end', () => socket.end());
+  };
+}
+```
+
+전체 포트를 TLS 시뮬레이터로 실행하는 개발용 설정은 `src/services/all-ports.example.json`입니다. LXC에서 `PORT_SERVICES_FILE=/opt/purethink-bridge/src/services/all-ports.example.json`으로 지정할 수 있습니다. 예제는 80을 포함해 모든 포트에 TLS를 사용하므로 평문 클라이언트와는 통신하지 않습니다. 8885/6002까지 이 설정으로 대체하면 기존 MQTT 브리지/펌웨어 핸들러도 교체됩니다. 운영 시 필요한 포트만 JSON에 넣으세요.
+
+현재 제공하는 시뮬레이터는 다음과 같습니다.
+
+- HTTP 예제: `GET /health`, `GET /info`, HEAD 지원. 그 외 경로는 404, 다른 메서드는 405.
+- 스트림 예제: 줄바꿈으로 구분한 JSON의 `ping`, `set`, `get`, `delete`. 키 값은 포트별 메모리에 저장되며 재시작 시 초기화됩니다. 부분 수신/여러 명령 동시 수신, 요청 크기·키 개수·유휴 시간 제한을 처리합니다.
+
+예: `{"op":"set","key":"power","value":true}` 뒤 줄바꿈, 이어서 `{"op":"get","key":"power"}` 뒤 줄바꿈을 보내면 저장된 값을 반환합니다. 이들 예제는 원본 제조사 프로토콜의 구현이 아닙니다. 포트별 실제 명령/인증/응답 형식이 확인되면 해당 포트 파일에 구현해야 원본과 호환됩니다. TCP/TLS 범위만 지원하며 UDP·GRE는 포함하지 않습니다. 모든 모드는 기존 접근 로그에 포트·접속 IP·시각·송수신량을 남기고 TLS/서비스 오류도 기록합니다.

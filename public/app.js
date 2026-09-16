@@ -77,6 +77,8 @@ async function loadStatus() {
   setText('internalCounts', counts(state.internal));
 
   setStatus('localControl', state.device.status === 'connected' && state.internal.status === 'connected' ? 'available' : 'limited');
+  const access = state.bridge.access;
+  setText('portAccess', access ? Object.entries(access.ports).map(([port, stats]) => `${port}: ${stats.accepted} connections / ${stats.active} active / ${stats.mode}`).join('\n') + '\n\n' + access.recent.slice(-40).reverse().map((event) => `${event.time} :${event.port} ${event.event} ${event.remoteAddress || ''} ${event.error || ''}`).join('\n') : '-');
   setText('bridgeHost', state.bridge.host);
   setTime('startedAt', state.startedAt);
   setText('bridgeCounts', counts(state.bridge));
@@ -85,6 +87,8 @@ async function loadStatus() {
   const origin = state.bridge.origin;
   setText('originAddresses', origin.addresses.join(', '));
   setText('originDns', origin.server);
+  const https = origin.tcpServices?.find((service) => service.port === 443);
+  setText('originHttps', state.bridge.tls?.mode === 'terminate' ? `TLS termination :${state.bridge.tls.httpsPort} · custom certificate` : https ? `${https.status} · ${https.connections} connections${https.lastError ? ` · ${https.lastError}` : ''}` : 'Disabled — enable ORIGIN_TCP_PORTS=80,443');
   setText('originError', origin.lastError);
   setText('originPorts', [origin.mqttPort, origin.httpPort, ...(origin.tcpPorts || [])].join(', '));
   setText('originOta', origin.localOta ? 'DIV01 patch enabled' : 'Manufacturer passthrough');

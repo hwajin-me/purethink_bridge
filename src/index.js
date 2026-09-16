@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import tls from 'node:tls';
+import https from 'node:https';
+import { loadPortServices, createPortService } from './port-services.js';
+import { createAccessLog } from './access-log.js';
+import { customTcpRoutes } from './custom-routes.js';
+import { loadCustomTls, tlsListeners } from './tls-config.js';
 import { fileURLToPath } from 'node:url';
 
 import Aedes from 'aedes';
@@ -8,7 +13,7 @@ import express from 'express';
 import mqtt from 'mqtt';
 import selfsigned from 'selfsigned';
 import { createOriginLookup, DNS_SERVERS } from './origin.js';
-import { createOriginProxy, createTcpProxy } from './origin-proxy.js';
+import { createOriginProxy, createTcpProxy, originTcpPorts } from './origin-proxy.js';
 import { createFirmwareStore } from './firmware.js';
 import { createMirrorTracker } from './mirror-tracker.js';
 import { mergeInternalMqtt, validateInternalMqtt, writeConfig } from './config.js';
@@ -25,6 +30,20 @@ const CERT_DIR = path.join(DATA_DIR, 'certs');
 const DISPLAY_TIME_ZONE = process.env.TZ || 'Asia/Seoul';
 const ORIGIN_HTTP_PORT = Number(process.env.ORIGIN_HTTP_PORT || 6002);
 const LOCAL_OTA_ENABLED = process.env.LOCAL_OTA_ENABLED === 'true';
+const reservedPorts = [HTTP_PORT, DEVICE_MQTT_PORT, ORIGIN_HTTP_PORT, 16003];
+const tlsConfig = tlsListeners(process.env, reservedPorts);
+const customTls = loadCustomTls();
+if ((tlsConfig.httpsPort || tlsConfig.dashboardPort) && !customTls) {
+  throw new Error('HTTPS termination requires TLS_CERT_FILE and TLS_KEY_FILE');
+}
+const TCP_PORTS = originTcpPorts(process.env.ORIGIN_TCP_PORTS, reservedPorts)
+  .filter((port) => port !== tlsConfig.httpsPort && port !== tlsConfig.httpPort);
+const routes = customTcpRoutes(process.env.CUSTOM_TCP_ROUTES, TCP_PORTS,
+  [HTTP_PORT, DEVICE_MQTT_PORT, ORIGIN_HTTP_PORT, tlsConfig.httpPort, tlsConfig.httpsPort, tlsConfig.dashboardPort]);
+if (TCP_PORTS.includes(tlsConfig.dashboardPort)) throw new Error('DASHBOARD_HTTPS_PORT conflicts with ORIGIN_TCP_PORTS');
+const portServices = tlsConfig.mode === 'terminate' ? await loadPortServices(process.env.PORT_SERVICES_FILE,
+  [...TCP_PORTS, DEVICE_MQTT_PORT, ORIGIN_HTTP_PORT, tlsConfig.httpPort, tlsConfig.httpsPort],
+  [HTTP_PORT, tlsConfig.dashboardPort]) : {};
 
 const MANUFACTURER = {
   host: 'dapt.iptime.org',
@@ -98,6 +117,9 @@ const state = {
   }
 };
 
+const accessLog = createAccessLog({ directory: path.join(DATA_DIR, 'logs') });
+state.bridge.access = accessLog.state;
+const observe = (server, port, mode) => accessLog.observe(server, { port, mode });
 let config = DEFAULT_CONFIG;
 let manufacturerClient = null;
 let internalClient = null;
@@ -421,17 +443,39 @@ aedes.on('publish', (packet, client) => {
   publishToInternal(packet.topic, packet.payload);
 });
 
-const tlsOptions = ensureCertificate();
-const mqttServer = tls.createServer(tlsOptions, aedes.handle);
-mqttServer.listen(DEVICE_MQTT_PORT, DEVICE_MQTT_HOST, () => {
-  console.log(`Device MQTT/TLS listening on ${DEVICE_MQTT_HOST}:${DEVICE_MQTT_PORT}`);
-});
-
+const tlsOptions = customTls?.options || ensureCertificate();
+state.bridge.tls = { ...tlsConfig, custom: Boolean(customTls), ...customTls?.info };
+const serviceServers = {};
+for (const [port, serviceConfig] of Object.entries(portServices)) {
+  serviceServers[port] = await createPortService({ config: serviceConfig, tlsOptions, lookup: origin.lookup,
+    context: { log: (event) => accessLog.record({ ...event, port: Number(port), mode: 'simulate' }) },
+    onError: (error, socket) => {
+      accessLog.record({ event: 'service-error', port: Number(port), error: error.message, remoteAddress: socket?.remoteAddress, remotePort: socket?.remotePort });
+      state.bridge.lastError = `Port ${port}: ${error.message}`;
+      const service = state.bridge.origin.tcpServices?.find((entry) => entry.port === Number(port));
+      if (service) service.lastError = error.message;
+    }
+  });
+}
+if (!serviceServers[DEVICE_MQTT_PORT]) {
+  const mqttServer = observe(tls.createServer(tlsOptions, aedes.handle), DEVICE_MQTT_PORT, 'mqtt');
+  mqttServer.listen(DEVICE_MQTT_PORT, DEVICE_MQTT_HOST, () => {
+    console.log(`Device MQTT/TLS listening on ${DEVICE_MQTT_HOST}:${DEVICE_MQTT_PORT}`);
+  });
+}
 connectManufacturer();
 connectInternal();
 
 const app = express();
 app.use(express.json());
+app.get('/tls/root-ca.crt', (_req, res) => {
+  if (!customTls?.rootCa) return res.status(404).end();
+  res.set('Content-Type', 'application/x-x509-ca-cert').send(customTls.rootCa);
+});
+if (tlsConfig.dashboardPort) {
+  observe(https.createServer(tlsOptions, app), tlsConfig.dashboardPort, 'dashboard-tls').on('error', (error) => { console.error(error); process.exit(1); })
+    .listen(tlsConfig.dashboardPort, DEVICE_MQTT_HOST);
+}
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 app.get('/api/status', (_req, res) => {
@@ -478,9 +522,9 @@ app.post('/api/reconnect/internal', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.listen(HTTP_PORT, '0.0.0.0', () => {
+observe(app.listen(HTTP_PORT, '0.0.0.0', () => {
   console.log(`Dashboard listening on 0.0.0.0:${HTTP_PORT}`);
-});
+}), HTTP_PORT, 'dashboard');
 
 const firmware = createFirmwareStore({
   directory: process.env.FIRMWARE_DIR || (fs.existsSync('/var/lib/purethink-ota/firmware')
@@ -501,16 +545,63 @@ app.post('/api/firmware/prepare', async (_req, res) => {
   catch (error) { res.status(502).json({ ok: false, error: error.message, firmware: firmware.state }); }
 });
 const proxyError = (error) => { state.bridge.origin.lastError = error.message; };
-const originHttp = createOriginProxy({ lookup: origin.lookup, localOta: LOCAL_OTA_ENABLED,
-  firmware, onError: proxyError });
-originHttp.listen(ORIGIN_HTTP_PORT, DEVICE_MQTT_HOST, () => {
-  console.log(`Origin HTTP proxy listening on ${DEVICE_MQTT_HOST}:${ORIGIN_HTTP_PORT}`);
-});
-const extraPorts = [...new Set((process.env.ORIGIN_TCP_PORTS || '').split(',').filter(Boolean).map(Number))];
-for (const port of extraPorts) {
-  if (!Number.isInteger(port) || port < 1 || port > 65535 || [HTTP_PORT, DEVICE_MQTT_PORT, ORIGIN_HTTP_PORT, Number(process.env.LOCAL_OTA_PORT || 6003)].includes(port)) {
-    throw new Error(`Invalid or conflicting ORIGIN_TCP_PORTS port: ${port}`);
-  }
-  createTcpProxy({ port, lookup: origin.lookup, onError: proxyError }).listen(port, DEVICE_MQTT_HOST);
+if (!serviceServers[ORIGIN_HTTP_PORT]) {
+  const originHttp = createOriginProxy({ lookup: origin.lookup, localOta: LOCAL_OTA_ENABLED,
+    firmware, onError: proxyError });
+  observe(originHttp, ORIGIN_HTTP_PORT, 'origin-http').listen(ORIGIN_HTTP_PORT, DEVICE_MQTT_HOST, () => {
+    console.log(`Origin HTTP proxy listening on ${DEVICE_MQTT_HOST}:${ORIGIN_HTTP_PORT}`);
+  });
 }
-state.bridge.origin.tcpPorts = extraPorts;
+if (tlsConfig.httpPort && !serviceServers[tlsConfig.httpPort]) {
+  observe(createOriginProxy({ lookup: origin.lookup, localOta: LOCAL_OTA_ENABLED, firmware, onError: proxyError }), tlsConfig.httpPort, 'custom-http')
+    .on('error', (error) => { console.error(error); process.exit(1); })
+    .listen(tlsConfig.httpPort, DEVICE_MQTT_HOST);
+}
+if (tlsConfig.httpsPort && !serviceServers[tlsConfig.httpsPort]) {
+  observe(createOriginProxy({ lookup: origin.lookup, localOta: LOCAL_OTA_ENABLED, firmware,
+    tlsOptions, onError: proxyError }), tlsConfig.httpsPort, 'custom-https')
+    .on('error', (error) => { console.error(error); process.exit(1); })
+    .listen(tlsConfig.httpsPort, DEVICE_MQTT_HOST);
+}
+state.bridge.origin.tcpPorts = [...TCP_PORTS, ...(tlsConfig.httpsPort ? [tlsConfig.httpPort, tlsConfig.httpsPort] : [])];
+state.bridge.origin.tcpServices = TCP_PORTS.map((port) => ({ port, status: 'starting', connections: 0, lastError: null, lastConnected: null }));
+for (const service of state.bridge.origin.tcpServices) {
+  if (serviceServers[service.port]) continue;
+  const target = tlsConfig.mode === 'terminate' ? routes[service.port] : undefined;
+  service.mode = target ? 'custom-tcp' : 'passthrough';
+  service.target = target || { host: MANUFACTURER.host, port: service.port };
+  const server = createTcpProxy({ port: service.port, lookup: origin.lookup, target,
+    onConnection: () => { service.connections++; },
+    onConnect: () => { service.lastError = null; service.lastConnected = displayTime(); },
+    onError: (error, client) => {
+      service.lastError = `Origin TCP ${service.port}: ${error.message}`;
+      proxyError(new Error(service.lastError));
+      accessLog.record({ event: 'upstream-error', port: service.port, mode: service.mode, remoteAddress: client.remoteAddress, remotePort: client.remotePort, error: error.message });
+    }
+  });
+  observe(server, service.port, service.mode);
+  server.on('error', (error) => {
+    console.error(`Cannot listen on TCP ${service.port}: ${error.message}. Check port ownership and CAP_NET_BIND_SERVICE.`);
+    process.exit(1);
+  });
+  server.listen(service.port, DEVICE_MQTT_HOST, () => {
+    service.status = 'listening';
+    console.log(`${service.mode} listening on ${DEVICE_MQTT_HOST}:${service.port}`);
+  });
+}
+
+for (const [key, server] of Object.entries(serviceServers)) {
+  const port = Number(key);
+  const config = portServices[port];
+  let service = state.bridge.origin.tcpServices.find((entry) => entry.port === port);
+  if (!service) {
+    service = { port, status: 'starting', connections: 0, lastError: null };
+    state.bridge.origin.tcpServices.push(service);
+  }
+  service.mode = `${config.mode}-${config.transport}`;
+  service.protocol = config.protocol || 'stream';
+  observe(server, port, service.mode);
+  server.on('connection', () => { service.connections++; });
+  server.on('error', (error) => { console.error(`Port ${port}: ${error.message}`); process.exit(1); });
+  server.listen(port, DEVICE_MQTT_HOST, () => { service.status = 'listening'; });
+}

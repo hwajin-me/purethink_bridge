@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
+import tls from 'node:tls';
+import selfsigned from 'selfsigned';
 import { once } from 'node:events';
 import { createOriginLookup, DNS_SERVERS, ORIGIN_HOST } from '../src/origin.js';
-import { createOriginProxy, createTcpProxy } from '../src/origin-proxy.js';
+import { createOriginProxy, createTcpProxy, originTcpPorts } from '../src/origin-proxy.js';
 
 const query = (lookup, options = {}) => new Promise((resolve, reject) => lookup(ORIGIN_HOST, options,
   (error, address, family) => error ? reject(error) : resolve({ address, family })));
@@ -120,4 +122,53 @@ test('TCP proxy drains a large response after client half-close', async (t) => {
   const chunks = []; client.on('data', (chunk) => chunks.push(chunk));
   client.end('request'); await once(client, 'end');
   assert.deepEqual(Buffer.concat(chunks), payload);
+});
+
+
+test('standard HTTP/HTTPS are enabled by default; explicit overrides remain supported', () => {
+  assert.deepEqual(originTcpPorts(), [80,443,17,18,1723,2522,6001,6003,8090,8883,8886,11222,11221,11622,11821,11822,12220,12933,14621,14821,20622,24833]);
+  assert.deepEqual(originTcpPorts(''), []);
+  assert.deepEqual(originTcpPorts('80,443,8443,443'), [80, 443, 8443]);
+  assert.throws(() => originTcpPorts('443', [443]), /conflicting/);
+  assert.throws(() => originTcpPorts('not-a-port'), /Invalid/);
+});
+
+test('HTTPS passthrough preserves certificate validation, SNI, ALPN and response', async (t) => {
+  const pem = selfsigned.generate([{ name: 'commonName', value: ORIGIN_HOST }], {
+    keySize: 2048, algorithm: 'sha256',
+    extensions: [{ name: 'basicConstraints', cA: true },
+      { name: 'subjectAltName', altNames: [{ type: 2, value: ORIGIN_HOST }] }]
+  });
+  let receivedSni; let connections = 0; let connected = false;
+  const origin = tls.createServer({ key: pem.private, cert: pem.cert, ALPNProtocols: ['h2', 'http/1.1'] }, (socket) => {
+    receivedSni = socket.servername;
+    socket.end('origin TLS response');
+  });
+  const originPort = await listen(origin);
+  const proxy = createTcpProxy({ port: originPort, lookup: loopbackLookup,
+    onConnection: () => connections++, onConnect: () => { connected = true; } });
+  const port = await listen(proxy);
+  t.after(() => { proxy.close(); origin.close(); });
+  const client = tls.connect({ host: '127.0.0.1', port, servername: ORIGIN_HOST,
+    ca: pem.cert, rejectUnauthorized: true, ALPNProtocols: ['h2', 'http/1.1'] });
+  const chunks = []; client.on('data', (chunk) => chunks.push(chunk));
+  await once(client, 'secureConnect');
+  assert.equal(client.authorized, true);
+  assert.equal(client.alpnProtocol, 'h2');
+  assert.equal(client.getPeerCertificate().subject.CN, ORIGIN_HOST);
+  await once(client, 'end');
+  assert.equal(receivedSni, ORIGIN_HOST);
+  assert.equal(Buffer.concat(chunks).toString(), 'origin TLS response');
+  assert.equal(connections, 1); assert.equal(connected, true);
+});
+
+test('HTTPS origin DNS failure closes the client instead of leaving it pending', async (t) => {
+  let error;
+  const proxy = createTcpProxy({ port: 443, lookup: (_host, _options, cb) => cb(new Error('Origin DNS unavailable')),
+    onError: (value) => { error = value; } });
+  const port = await listen(proxy); t.after(() => proxy.close());
+  const client = net.connect(port, '127.0.0.1');
+  client.on('error', () => {});
+  await once(client, 'close');
+  assert.match(error.message, /Origin DNS unavailable/);
 });

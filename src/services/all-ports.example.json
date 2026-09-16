@@ -1,0 +1,146 @@
+{
+  "17": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/17.js"
+  },
+  "18": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/18.js"
+  },
+  "80": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "http",
+    "module": "./ports/80.js"
+  },
+  "443": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "http",
+    "module": "./ports/443.js"
+  },
+  "1723": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/1723.js"
+  },
+  "2522": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/2522.js"
+  },
+  "6001": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "http",
+    "module": "./ports/6001.js"
+  },
+  "6002": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "http",
+    "module": "./ports/6002.js"
+  },
+  "6003": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "http",
+    "module": "./ports/6003.js"
+  },
+  "8090": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "http",
+    "module": "./ports/8090.js"
+  },
+  "8883": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/8883.js"
+  },
+  "8885": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/8885.js"
+  },
+  "8886": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/8886.js"
+  },
+  "11222": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/11222.js"
+  },
+  "11221": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/11221.js"
+  },
+  "11622": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/11622.js"
+  },
+  "11821": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/11821.js"
+  },
+  "11822": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/11822.js"
+  },
+  "12220": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/12220.js"
+  },
+  "12933": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/12933.js"
+  },
+  "14621": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/14621.js"
+  },
+  "14821": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/14821.js"
+  },
+  "20622": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/20622.js"
+  },
+  "24833": {
+    "mode": "simulate",
+    "transport": "tls",
+    "protocol": "stream",
+    "module": "./ports/24833.js"
+  }
+}
