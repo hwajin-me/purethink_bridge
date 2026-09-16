@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { createMqttDiscovery } from '../src/mqtt-discovery.js';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
@@ -140,13 +141,14 @@ test('HTTPS passthrough preserves certificate validation, SNI, ALPN and response
       { name: 'subjectAltName', altNames: [{ type: 2, value: ORIGIN_HOST }] }]
   });
   let receivedSni; let connections = 0; let connected = false;
+  const discovery = createMqttDiscovery();
   const origin = tls.createServer({ key: pem.private, cert: pem.cert, ALPNProtocols: ['h2', 'http/1.1'] }, (socket) => {
     receivedSni = socket.servername;
     socket.end('origin TLS response');
   });
   const originPort = await listen(origin);
   const proxy = createTcpProxy({ port: originPort, lookup: loopbackLookup,
-    onConnection: () => connections++, onConnect: () => { connected = true; } });
+    onConnection: (socket) => { connections++; discovery.observe(socket, {port:443,mode:'passthrough'}); }, onConnect: () => { connected = true; } });
   const port = await listen(proxy);
   t.after(() => { proxy.close(); origin.close(); });
   const client = tls.connect({ host: '127.0.0.1', port, servername: ORIGIN_HOST,
@@ -160,6 +162,8 @@ test('HTTPS passthrough preserves certificate validation, SNI, ALPN and response
   assert.equal(receivedSni, ORIGIN_HOST);
   assert.equal(Buffer.concat(chunks).toString(), 'origin TLS response');
   assert.equal(connections, 1); assert.equal(connected, true);
+  assert.equal(discovery.state.connections[0].status, 'encrypted');
+  assert.equal(discovery.state.connections[0].clientId, undefined);
 });
 
 test('HTTPS origin DNS failure closes the client instead of leaving it pending', async (t) => {

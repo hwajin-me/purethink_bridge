@@ -76,7 +76,7 @@ button.danger:hover {
 
 .status-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
 }
 
@@ -215,7 +215,7 @@ pre {
 
 form {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   align-items: end;
 }
@@ -268,7 +268,7 @@ input[type="checkbox"] {
 
 .button-row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   grid-column: 1 / -1;
 }
@@ -315,3 +315,22 @@ input[type="checkbox"] {
 
 .origin-status { margin-top: 16px; }
 .settings p { font-size: 13px; line-height: 1.6; }
+
+.device-settings { margin: 20px 0; }
+.device-row { display: grid; grid-template-columns: 1fr 1.3fr 1.5fr auto; gap: 12px; align-items: end; margin-bottom: 12px; }
+.device-row input { width: 100%; min-width: 0; box-sizing: border-box; }
+.device-row label { display: grid; gap: 6px; min-width: 0; }
+.device-actions { display: flex; gap: 12px; }
+.device-status { margin-top: 16px; border-top: 1px solid #dce2e8; padding-top: 12px; overflow-wrap: anywhere; }
+#mqttClients { overflow-wrap: anywhere; }
+@media (max-width: 700px) { .device-row { grid-template-columns: 1fr; } }
+
+.devices-card { grid-column: 1 / -1; }
+#deviceList { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; }
+.device-settings p { margin-bottom: 12px; }
+#devicesForm { display: block; }
+
+.mqtt-detection { padding: 14px 0; border-top: 1px solid #dde5e7; overflow-wrap: anywhere; }
+.mqtt-detection p { margin: 8px 0; }
+.mqtt-detection .device-actions { margin-top: 10px; flex-wrap: wrap; }
+#mqttDiscovery { max-height: 500px; overflow: auto; margin-top: 12px; }

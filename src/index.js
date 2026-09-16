@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import { createMqttDiscovery } from './mqtt-discovery.js';
+import { createDeviceRegistry, validateDevices } from './devices.js';
 import path from 'node:path';
 import tls from 'node:tls';
 import https from 'node:https';
@@ -54,6 +56,7 @@ const MANUFACTURER = {
 
 const DEFAULT_CONFIG = {
   version: 1,
+  devices: [],
   internalMqtt: {
     enabled: process.env.INTERNAL_MQTT_ENABLED !== 'false',
     host: process.env.INTERNAL_MQTT_HOST || '127.0.0.1',
@@ -119,13 +122,15 @@ const state = {
 
 const accessLog = createAccessLog({ directory: path.join(DATA_DIR, 'logs') });
 state.bridge.access = accessLog.state;
+const mqttDiscovery = createMqttDiscovery({ record: accessLog.record });
+state.bridge.mqttDiscovery = mqttDiscovery.state;
 const observe = (server, port, mode) => accessLog.observe(server, { port, mode });
 let config = DEFAULT_CONFIG;
 let manufacturerClient = null;
 let internalClient = null;
 const recentMirrors = createMirrorTracker();
 const manufacturerSubscriptions = new Set();
-const deviceClients = new Map();
+const devices = createDeviceRegistry(displayTime);
 const origin = createOriginLookup({ onUpdate: (update) => Object.assign(state.bridge.origin, update) });
 
 function ensureDir(dir) {
@@ -140,6 +145,7 @@ function loadConfig() {
   const loaded = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   const migrated = {
     ...DEFAULT_CONFIG,
+    devices: validateDevices(loaded.devices || []),
     internalMqtt: { ...DEFAULT_CONFIG.internalMqtt, ...(loaded.internalMqtt || {}) }
   };
   // Old releases saved a disabled, empty placeholder. Preserve explicit broker choices.
@@ -188,7 +194,7 @@ function subscribeManufacturerForClient(clientId) {
   const client = manufacturerClient;
   client.subscribe(topic, { qos: 0 }, (err, granted) => {
     if (client !== manufacturerClient) return;
-    if (!deviceClients.has(clientId)) {
+    if (!devices.subscriptions().has(clientId)) {
       client.unsubscribe(topic);
       return;
     }
@@ -236,6 +242,9 @@ function publishToDevice(topic, payload) {
     if (err) {
       state.bridge.lastError = `device publish failed: ${err.message}`;
       return;
+    }
+    for (const device of devices.list()) {
+      if (topic.startsWith(`/things/${device.id}/`)) device.tx += 1;
     }
     state.device.tx += 1;
     state.bridge.tx += 1;
@@ -296,7 +305,7 @@ function connectManufacturer() {
     state.manufacturer.lastConnected = displayTime();
     state.manufacturer.lastError = null;
     manufacturerSubscriptions.clear();
-    for (const clientId of deviceClients.keys()) subscribeManufacturerForClient(clientId);
+    for (const clientId of devices.subscriptions()) subscribeManufacturerForClient(clientId);
   });
 
   client.on('message', (topic, payload) => {
@@ -408,37 +417,50 @@ config = loadConfig();
 validateInternalMqtt(config.internalMqtt);
 const aedes = new Aedes();
 
+function refreshDevices() {
+  state.devices = devices.list();
+  state.mqttClients = devices.clientIds();
+  const connected = state.devices.filter((device) => device.status === 'connected');
+  state.device.status = connected.length ? 'connected' : 'offline';
+  state.device.clientId = connected.at(-1)?.clientId || null;
+  const wanted = devices.subscriptions();
+  for (const topic of manufacturerSubscriptions) {
+    if (!wanted.has(topic.slice('/things/'.length, -2))) {
+      manufacturerSubscriptions.delete(topic);
+      if (manufacturerClient?.connected) manufacturerClient.unsubscribe(topic);
+    }
+  }
+  for (const id of wanted) subscribeManufacturerForClient(id);
+}
+devices.configure(config.devices);
+refreshDevices();
+
 aedes.on('client', (client) => {
-  deviceClients.set(client.id, client);
-  state.device.status = 'connected';
-  state.device.clientId = client?.id || null;
-  state.device.lastSeen = displayTime();
-  subscribeManufacturerForClient(state.device.clientId);
+  devices.connect(client);
+  refreshDevices();
 });
 
 aedes.on('clientDisconnect', (client) => {
-  if (deviceClients.get(client?.id) !== client) return;
-  deviceClients.delete(client?.id);
-  const topic = topicForClient(client?.id);
-  manufacturerSubscriptions.delete(topic);
-  if (manufacturerClient?.connected) manufacturerClient.unsubscribe(topic);
-  if (state.device.clientId === client?.id) {
-    state.device.clientId = [...deviceClients.keys()].at(-1) || null;
-    state.device.status = deviceClients.size ? 'connected' : 'offline';
-    state.device.lastSeen = displayTime();
-  }
+  devices.disconnect(client);
+  refreshDevices();
 });
 
 aedes.on('publish', (packet, client) => {
   if (!client) return;
   if (!topicMatchesThings(packet.topic)) return;
-  state.device.status = 'connected';
-  state.device.clientId = client.id;
-  state.device.lastSeen = displayTime();
-  state.device.lastTopic = packet.topic;
-  state.device.rx += 1;
+  const device = devices.forClient(client);
+  if (device) {
+    device.lastSeen = displayTime();
+    device.lastTopic = packet.topic;
+    device.rx += 1;
+    state.device.status = 'connected';
+    state.device.clientId = client.id;
+    state.device.lastSeen = displayTime();
+    state.device.lastTopic = packet.topic;
+    state.device.rx += 1;
+  }
   state.bridge.rx += 1;
-  recordMessage('from-device', packet.topic, packet.payload);
+  recordMessage(device ? 'from-device' : 'from-client', packet.topic, packet.payload);
   publishToManufacturer(packet.topic, packet.payload);
   publishToInternal(packet.topic, packet.payload);
 });
@@ -448,6 +470,7 @@ state.bridge.tls = { ...tlsConfig, custom: Boolean(customTls), ...customTls?.inf
 const serviceServers = {};
 for (const [port, serviceConfig] of Object.entries(portServices)) {
   serviceServers[port] = await createPortService({ config: serviceConfig, tlsOptions, lookup: origin.lookup,
+    onConnection: (socket) => mqttDiscovery.observe(socket, { port: Number(port), mode: `${serviceConfig.mode}-${serviceConfig.transport}` }),
     context: { log: (event) => accessLog.record({ ...event, port: Number(port), mode: 'simulate' }) },
     onError: (error, socket) => {
       accessLog.record({ event: 'service-error', port: Number(port), error: error.message, remoteAddress: socket?.remoteAddress, remotePort: socket?.remotePort });
@@ -458,7 +481,10 @@ for (const [port, serviceConfig] of Object.entries(portServices)) {
   });
 }
 if (!serviceServers[DEVICE_MQTT_PORT]) {
-  const mqttServer = observe(tls.createServer(tlsOptions, aedes.handle), DEVICE_MQTT_PORT, 'mqtt');
+  const mqttServer = observe(tls.createServer(tlsOptions, (socket) => {
+    mqttDiscovery.observe(socket, { port: DEVICE_MQTT_PORT, mode: 'mqtt-tls-terminated' });
+    aedes.handle(socket);
+  }), DEVICE_MQTT_PORT, 'mqtt');
   mqttServer.listen(DEVICE_MQTT_PORT, DEVICE_MQTT_HOST, () => {
     console.log(`Device MQTT/TLS listening on ${DEVICE_MQTT_HOST}:${DEVICE_MQTT_PORT}`);
   });
@@ -482,6 +508,7 @@ app.get('/api/status', (_req, res) => {
   res.json({
     state,
     config: {
+      devices: config.devices,
       internalMqtt: {
         ...config.internalMqtt,
         password: config.internalMqtt.password ? '********' : ''
@@ -502,10 +529,16 @@ app.get('/api/config', (_req, res) => {
 
 app.post('/api/config', (req, res) => {
   try {
-    const next = { internalMqtt: mergeInternalMqtt(config.internalMqtt, req.body?.internalMqtt) };
+    const next = {
+      ...config,
+      devices: Object.hasOwn(req.body || {}, 'devices') ? validateDevices(req.body.devices) : config.devices,
+      internalMqtt: Object.hasOwn(req.body || {}, 'internalMqtt') ? mergeInternalMqtt(config.internalMqtt, req.body.internalMqtt) : config.internalMqtt
+    };
     saveConfig(next);
     config = next;
-    connectInternal();
+    devices.configure(config.devices);
+    refreshDevices();
+    if (Object.hasOwn(req.body || {}, 'internalMqtt')) connectInternal();
     res.json({ ok: true });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message });
@@ -571,7 +604,10 @@ for (const service of state.bridge.origin.tcpServices) {
   service.mode = target ? 'custom-tcp' : 'passthrough';
   service.target = target || { host: MANUFACTURER.host, port: service.port };
   const server = createTcpProxy({ port: service.port, lookup: origin.lookup, target,
-    onConnection: () => { service.connections++; },
+    onConnection: (socket) => {
+      service.connections++;
+      mqttDiscovery.observe(socket, { port: service.port, mode: service.mode });
+    },
     onConnect: () => { service.lastError = null; service.lastConnected = displayTime(); },
     onError: (error, client) => {
       service.lastError = `Origin TCP ${service.port}: ${error.message}`;

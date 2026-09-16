@@ -17,15 +17,10 @@
       </header>
 
       <section class="status-grid">
-        <article>
-          <h2>Device</h2>
+        <article class="devices-card">
+          <h2>Devices</h2>
           <strong id="deviceStatus">-</strong>
-          <dl>
-            <dt>Client ID</dt><dd id="deviceClient">-</dd>
-            <dt>Last Seen</dt><dd id="deviceSeen">-</dd>
-            <dt>Last Topic</dt><dd id="deviceTopic">-</dd>
-            <dt>RX / TX</dt><dd id="deviceCounts">-</dd>
-          </dl>
+          <div id="deviceList"></div>
         </article>
 
         <article>
@@ -63,6 +58,29 @@
           </dl>
           <button id="reconnectInternal" type="button">Reconnect</button>
         </article>
+      </section>
+
+      <section class="settings">
+        <h2>MQTT 연결 탐지</h2>
+        <p>CONNECT에서 읽은 접속 Client ID와 /things/ 토픽의 기기 ID 후보를 구분해서 표시합니다. 여러 토픽을 구독하는 앱일 수도 있으므로 확인 후 등록하세요.</p>
+        <p>TLS passthrough는 암호화 상태여서 ID를 읽을 수 없습니다. Bridge가 TLS를 해제하는 연결과 평문 MQTT를 탐지합니다.</p>
+        <div id="mqttDiscovery"></div>
+      </section>
+
+      <section class="settings device-settings">
+        <h2>기기 등록</h2>
+        <p>기기 ID는 <code>/things/기기ID/...</code>에 쓰이는 실제 ID입니다. 모델 접두사와 관계없이 등록할 수 있습니다.</p>
+        <p>MQTT 접속 Client ID가 기기 ID와 다르면 별도로 입력하세요. 같으면 비워 두세요. 아래에서 저장해도 기기 자체의 ID는 변경되지 않습니다.</p>
+        <p>현재 MQTT 접속 ID: <span id="mqttClients">없음</span></p>
+        <datalist id="mqttClientOptions"></datalist>
+        <form id="devicesForm">
+          <div id="deviceRows"></div>
+          <div class="device-actions">
+            <button id="addDevice" type="button">기기 추가</button>
+            <button type="submit">기기 목록 저장</button>
+          </div>
+        </form>
+        <p id="devicesMessage" role="status"></p>
       </section>
 
       <section class="settings-grid">

@@ -1,4 +1,6 @@
 import test from 'node:test';
+import mqttPacket from 'mqtt-packet';
+import { createMqttDiscovery } from '../src/mqtt-discovery.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,11 +27,15 @@ test('TLS proxy terminates client TLS and forwards to plain TCP or verified TLS 
     const upstream = encrypted ? tls.createServer(tlsOptions,(s)=>s.pipe(s)) : net.createServer((s)=>s.pipe(s));
     const target = await listen(t,upstream);
     let resolutions = 0;
+    const discovery = createMqttDiscovery();
     const server = await createPortService({config:{port:20622,mode:'proxy',transport:'tls',upstream:{host:'dapt.iptime.org',port:target,transport:encrypted?'tls':'tcp',ca:pem.cert}},tlsOptions,
+      onConnection(socket) { discovery.observe(socket, {port:20622,mode:'proxy-tls'}); },
       lookup(_host,_options,callback) {resolutions++; callback(null,'127.0.0.1',4);} });
     const port = await listen(t,server);
     const client = connect(port); await once(client,'secureConnect');
-    const reply = once(client,'data'); client.write('test'); assert.equal((await reply)[0].toString(),'test');
+    const frame = mqttPacket.generate({cmd:'connect',protocolVersion:4,clientId:'captured-through-tls',clean:true,keepalive:60});
+    const reply = once(client,'data'); client.write(frame); assert.deepEqual((await reply)[0],frame);
+    assert.equal(discovery.state.connections[0].clientId,'captured-through-tls');
     client.end(); await once(client,'close'); assert.equal(resolutions,1);
   }
 });

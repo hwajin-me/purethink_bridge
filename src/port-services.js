@@ -38,7 +38,7 @@ export async function loadPortServices(filename, allowedPorts, otherPorts = []) 
   return result;
 }
 
-export async function createPortService({ config, tlsOptions, lookup, context = {}, onError = () => {} }) {
+export async function createPortService({ config, tlsOptions, lookup, context = {}, onConnection = () => {}, onError = () => {} }) {
   const { port, transport, mode } = config;
   const report = (error, socket) => onError(error, socket);
   let handler;
@@ -74,7 +74,7 @@ export async function createPortService({ config, tlsOptions, lookup, context = 
   } else {
     const connection = (socket) => {
       socket.on('error', (error) => report(error, socket));
-      Promise.resolve().then(() => handler(socket)).catch((error) => { report(error, socket); socket.destroy(); });
+      Promise.resolve().then(() => { onConnection(socket); return handler(socket); }).catch((error) => { report(error, socket); socket.destroy(); });
     };
     server = transport === 'tls' ? tls.createServer({ ...tlsOptions, allowHalfOpen: true, handshakeTimeout: 10000 }, connection) : net.createServer({ allowHalfOpen: true }, connection);
   }
