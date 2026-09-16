@@ -43,7 +43,7 @@ cat /tmp/bridge.log /tmp/ota.log
 MOCK
 chmod +x /tmp/fixture-bin/*
 mkdir /tmp/repo
-cp -r /source/src /source/public /source/package.json /source/package-lock.json /tmp/repo/
+cp -r /source/install /source/src /source/public /source/package.json /source/package-lock.json /tmp/repo/
 git -C /tmp/repo init -qb main
 git -C /tmp/repo add .
 git -C /tmp/repo -c user.name=Test -c user.email=test@example.invalid commit -qm fixture
@@ -53,6 +53,7 @@ if FIXTURE_VIRT=kvm bash /source/install/purethink-bridge-install.sh; then exit 
 bash /source/install/purethink-bridge-install.sh
 systemd-analyze verify /etc/systemd/system/purethink-{bridge,ota}.service
 purethink-manage help
+bridge --help
 # Refuse legacy code before changing service files or moving the OTA listener.
 mv /opt/purethink-bridge/src/firmware.js /tmp/firmware.js.saved
 if bash /source/install/purethink-bridge-install.sh > /tmp/legacy.log 2>&1; then exit 1; fi
@@ -95,6 +96,14 @@ bash /source/install/purethink-bridge-install.sh
 sha256sum -c /tmp/state.sha
 [[ $(git -C /opt/purethink-bridge remote get-url origin) == "$REPO_URL" ]]
 [[ $(git -C /opt/purethink-bridge remote get-url --push origin) == "$REPO_URL" ]]
+# Update through the installed command, preserving settings and certificates.
+echo updated > /tmp/repo/update-marker
+git -C /tmp/repo add update-marker
+git -C /tmp/repo -c user.name=Test -c user.email=test@example.invalid commit -qm update
+bridge update
+[[ -f /opt/purethink-bridge/update-marker ]]
+sha256sum -c /tmp/state.sha
+[[ $(git -C /opt/purethink-bridge rev-parse HEAD) == "$(git -C /tmp/repo rev-parse HEAD)" ]]
 python3 - <<'PY'
 import hashlib, json, urllib.request, urllib.error
 base='http://127.0.0.1:16003'

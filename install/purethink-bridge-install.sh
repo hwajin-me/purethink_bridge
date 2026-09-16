@@ -26,13 +26,15 @@ pb_configure_origin() {
 
 pb_usage() {
   cat <<'EOF'
-Usage: bash purethink-bridge-install.sh
+Usage: bash purethink-bridge-install.sh [--update]
 Run as root inside Ubuntu 24.04 LXC with systemd. Reruns are supported.
 Default source: https://github.com/hwajin-me/purethink_bridge.git (main)
 Optional: REPO_URL=<git URL> REPO_REF=<branch or tag> DIV01_FIRMWARE_URL=<original firmware URL>
 No container IP input is required or saved by this installer.
 Existing bridge source, runtime, environment, configuration and certificates are preserved.
 Git origin is aligned with the selected REPO_URL (default: the fork); no automatic pull.
+Use bridge update (or purethink-manage update) to update an existing installation.
+--update pulls the current branch with --ff-only, installs dependencies and refreshes services.
 Installs bridge (33301/8885) and HTTP/HTTPS passthrough (80/443), origin HTTP proxy (6002) and loopback DIV01-only OTA server (16003). No device is flashed automatically.
 EOF
 }
@@ -54,6 +56,36 @@ pb_cleanup() {
     (eval "$PB_PREVIOUS_EXIT"; exit "$status")
   fi
   exit "$status"
+}
+
+# Called with the installation lock held; keep it through the refreshed installer.
+pb_update() {
+  [[ -d $PB_APP/.git && -x $PB_NODE/bin/node ]] || pb_die 'An existing Git installation and Node runtime are required.'
+  git -C "$PB_APP" symbolic-ref -q HEAD >/dev/null || pb_die 'Detached HEAD: select a branch before using bridge update.'
+  [[ -z $(git -C "$PB_APP" status --porcelain --untracked-files=no) ]] || pb_die 'Local source changes found. Commit or stash them before updating.'
+  id purethink-bridge >/dev/null 2>&1 || pb_die 'Missing purethink-bridge service account.'
+  pb_configure_origin "$PB_APP" "$repo_url"
+  # Resolve conflicts before stopping services. Never merge or reset local work.
+  git -C "$PB_APP" fetch origin
+  local upstream
+  upstream=$(git -C "$PB_APP" rev-parse --abbrev-ref '@{upstream}') || pb_die 'Current branch has no upstream.'
+  git -C "$PB_APP" merge-base --is-ancestor HEAD "$upstream" || pb_die 'Current branch cannot fast-forward to its upstream.'
+  if [[ -f $PB_APP/package-lock.json ]] && ! git -C "$PB_APP" ls-files --error-unmatch package-lock.json >/dev/null 2>&1; then
+    mv "$PB_APP/package-lock.json" "/root/purethink-package-lock.$(date +%s).json"
+  fi
+  systemctl stop purethink-bridge purethink-ota
+  git -C "$PB_APP" merge --ff-only "$upstream"
+  (
+    cd "$PB_APP"
+    trap 'chown -R root:root "$PB_APP"' EXIT
+    chown -R purethink-bridge:purethink-bridge "$PB_APP"
+    local action=install
+    if git -c safe.directory="$PB_APP" ls-files --error-unmatch package-lock.json >/dev/null 2>&1; then action=ci; fi
+    runuser -u purethink-bridge -- env PATH="$PB_NODE/bin:$PATH" HOME="$PB_DATA" npm "$action" --omit=dev --no-audit --no-fund
+  )
+  # Load the updated service definitions while retaining the same lock and cleanup.
+  source "$PB_APP/install/purethink-bridge-install.sh"
+  pb_main
 }
 
 pb_install_ota() {
@@ -186,6 +218,9 @@ PY
 #!/usr/bin/env bash
 set -Eeuo pipefail
 case "${1:-help}" in
+  update)
+    [[ $# == 1 ]] || { echo 'Usage: bridge update' >&2; exit 1; }
+    exec bash /opt/purethink-bridge/install/purethink-bridge-install.sh --update ;;
   status) systemctl status --no-pager purethink-bridge purethink-ota ;;
   restart) systemctl restart purethink-bridge purethink-ota ;;
   ota-start) systemctl enable --now purethink-ota ;;
@@ -196,11 +231,12 @@ case "${1:-help}" in
     python3 /opt/purethink-ota/patch-div01.py "$2" "$3"
     ;;
   help|-h|--help)
-    echo 'Usage: purethink-manage {status|restart|ota-start|ota-stop|logs|firmware-patch ORIGINAL.bin PATCHED.bin}' ;;
+    echo 'Usage: purethink-manage {update|status|restart|ota-start|ota-stop|logs|firmware-patch ORIGINAL.bin PATCHED.bin}' ;;
   *) echo 'Unknown command. Use purethink-manage help.' >&2; exit 1 ;;
 esac
 CONTROL
   install -m 0755 "$PB_WORK/purethink-manage" /usr/local/sbin/purethink-manage
+  install -m 0755 "$PB_WORK/purethink-manage" /usr/local/sbin/bridge
   cat > /etc/systemd/system/purethink-ota.service <<'UNIT'
 [Unit]
 Description=Purethink DIV01 OTA Server
@@ -246,7 +282,7 @@ PY
 
 pb_main() {
   if [[ ${1:-} == --help || ${1:-} == -h ]]; then pb_usage; return 0; fi
-  (($# == 0)) || pb_die 'Unexpected arguments. Use --help for usage.'
+  [[ $# == 0 || ( $# == 1 && $1 == --update ) ]] || pb_die 'Unexpected arguments. Use --help for usage.'
   [[ $EUID -eq 0 ]] || pb_die 'Run as root inside the Ubuntu LXC, not on the Proxmox host.'
   command -v pveversion >/dev/null && pb_die 'This is the Proxmox host. Run this script inside the Ubuntu LXC using pct exec.'
   # shellcheck disable=SC1091
@@ -258,11 +294,13 @@ pb_main() {
   # Serialize preflight and promotion so concurrent runs cannot delete each
   # other's staging/installation paths. flock is included in Ubuntu util-linux.
   command -v flock >/dev/null || pb_die 'Missing flock; install the Ubuntu util-linux package.'
-  exec 9>/run/lock/purethink-bridge-install.lock
-  flock -n 9 || pb_die 'Another Purethink Bridge installer is running.'
-  PB_LOCKED=true
-  PB_PREVIOUS_EXIT=$(trap -p EXIT)
-  trap 'pb_cleanup "$?"' EXIT
+  if [[ ${PB_LOCKED:-false} != true ]]; then
+    exec 9>/run/lock/purethink-bridge-install.lock
+    flock -n 9 || pb_die 'Another Purethink Bridge installer is running.'
+    PB_LOCKED=true
+    PB_PREVIOUS_EXIT=$(trap -p EXIT)
+    trap 'pb_cleanup "$?"' EXIT
+  fi
 
   PB_APP=/opt/purethink-bridge
   PB_NODE=/opt/purethink-node
@@ -276,6 +314,7 @@ pb_main() {
   for target in "$PB_APP" "$PB_NODE" "$PB_DATA" "$PB_OTA" /var/lib/purethink-ota /etc/purethink-bridge.env; do
     [[ ! -L $target ]] || pb_die "Refusing unexpected symlink: $target"
   done
+  if [[ ${1:-} == --update ]]; then pb_update; return; fi
   if [[ -e $PB_APP ]]; then
     [[ -f $PB_APP/src/index.js && -f $PB_APP/package.json && -d $PB_APP/node_modules ]] || pb_die 'Incomplete bridge directory. Back it up and move it aside, then rerun.'
     [[ -f $PB_APP/src/origin-proxy.js && -f $PB_APP/src/firmware.js ]] || pb_die 'Update the existing Bridge source/dependencies first (README LXC update). Refusing to move legacy OTA away from 6002 without a replacement proxy.'
@@ -537,7 +576,7 @@ JS
   else
     apt-get clean
   fi
-  printf '\nBridge: http://<LXC-IP>:33301\nOrigin proxy: http://<LXC-IP>:6002 (local DIV01 OTA: 127.0.0.1:16003)\nData: %s\nLocal MQTT auto-connects. Follow README UniFi DNS setup; enable local DIV01 OTA only when needed.\n' "$PB_DATA"
+  printf '\nBridge: http://<LXC-IP>:33301\nOrigin proxy: http://<LXC-IP>:6002 (local DIV01 OTA: 127.0.0.1:16003)\nData: %s\nUpdate: bridge update (root)\nLocal MQTT auto-connects. Follow README UniFi DNS setup; enable local DIV01 OTA only when needed.\n' "$PB_DATA"
 }
 
 # Also supports the Community Scripts bash -c invocation and curl | bash.

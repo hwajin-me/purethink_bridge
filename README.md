@@ -354,6 +354,20 @@ curl -fsS http://127.0.0.1:33301/api/status
 
 #### LXC 설치의 업데이트
 
+설치 스크립트는 `bridge`와 `purethink-manage` 관리 명령어를 설치합니다. Proxmox에서 백업 또는 스냅샷을 만든 뒤 **LXC 내부 root 셸**에서 실행하세요.
+
+```bash
+bridge update
+# 동일한 명령어
+purethink-manage update
+# 설치 스크립트 직접 실행
+bash /opt/purethink-bridge/install/purethink-bridge-install.sh --update
+```
+
+현재 브랜치를 fast-forward로 갱신하고 의존성 설치, 최신 설치 스크립트로 서비스 재설정, 상태 검증까지 수행합니다. 설정·인증서·Node.js 런타임은 보존합니다. 로컬 소스 변경, upstream 미설정, 분기된 이력, detached HEAD에서는 중단합니다. 서비스 중지 이후 실패하면 자동 복구하지 않으므로 로그를 확인하거나 백업으로 복구하세요.
+
+아직 `update` 명령이 없는 기존 설치는 아래 수동 절차를 한 번 실행하면 명령어가 추가됩니다.
+
 기존 원본 저장소 설치도 아래 절차에서 `origin`을 사용자 포크로 전환합니다. 로컬 변경이나 분기된 이력 때문에 fast-forward가 불가능하면 중단되며 강제로 덮어쓰지 않습니다.
 
 업데이트 전에 Proxmox에서 컨테이너 백업 또는 스냅샷을 만드세요. LXC 내부 root 셸에서 실행합니다. 설치 스크립트를 재실행해도 기존 브릿지 소스는 자동 업데이트하지 않습니다.
@@ -393,6 +407,8 @@ curl -fsS http://127.0.0.1:33301/api/status
 #### 설치 스크립트 검증
 
 DNS failover·TTL·순환 방지, HTTP/TCP 프록시, 실제 MQTT 브로커를 이용한 자동 연결·재연결·다중 기기 구독 테스트는 `npm ci && npm test`로 실행합니다. 패치 OTA 라우트는 `python3 tests/ota-unit.py`로 검증합니다.
+
+`bash tests/update-unit.sh`는 실제 서비스 변경 없이 업데이트의 fast-forward, 로컬 변경·detached HEAD·upstream 누락·분기 이력 거부, 의존성 설치 실패 시 소유권 복원을 검증합니다.
 
 전체 설치는 다음 명령으로 폐기 가능한 Ubuntu 컨테이너에서 검증할 수 있습니다.
 
